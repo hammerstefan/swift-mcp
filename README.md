@@ -9,6 +9,9 @@ data yet.** The authentication and key-management code needs an independent
 security review, and connections from real Workshop clients still need
 end-to-end validation. Use only a controlled test Swift service and test data.
 
+**First time with an OpenStack RC file and Copilot?** Follow the
+[Swift MCP and Workshop quickstart](docs/quickstart.md).
+
 ## Before you start
 
 You need:
