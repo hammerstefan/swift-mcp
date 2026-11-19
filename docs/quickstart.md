@@ -1,6 +1,6 @@
 # Swift MCP and Workshop quickstart
 
-Use Copilot CLI to check the object count and bytes used by one Swift test
+Use Copilot CLI to check the object count and bytes used by one Swift
 container. Swift MCP runs on your Linux host; Copilot runs in the included
 `swift-mcp-quickstart` Workshop. You don't need to install Copilot CLI or
 create a Copilot token before you start. Run the commands from the **repository
@@ -77,7 +77,7 @@ variables **before** launching it. Replace both examples with your own values:
 
 ```sh
 export SWIFT_MCP_OPENRC="$HOME/test-swift.rc"
-export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
+export SWIFT_MCP_CONTAINERS='["my-container"]'
 ```
 
 Start the wizard:
@@ -101,9 +101,9 @@ just quickstart
 ## Verify one Swift tool call
 
 1. In Copilot, open `/mcp` and check that `swift-mcp` is listed.
-2. Enter this prompt, replacing `quickstart-test` with your container:
+2. Enter this prompt, replacing `my-container` with your container:
 
-   > Use `get_container_stats` from `swift-mcp` for `quickstart-test`.
+   > Use `get_container_stats` from `swift-mcp` for `my-container`.
    > Show the object count and bytes used. Do not read any objects.
 
 3. If Copilot asks for approval, approve only that call. Open the **tool
@@ -169,11 +169,11 @@ In that terminal, choose how to supply Swift credentials:
   [Keystone v3 password setup](../README.md#keystone-v3-password) or
   [pre-issued token setup](../README.md#pre-issued-token) in this terminal.
 
-Replace `quickstart-test` with the container you will verify. This manual
+Replace `my-container` with the container you will verify. This manual
 recipe takes a **JSON array**, even for one container. Then start the server:
 
 ```sh
-export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
+export SWIFT_MCP_CONTAINERS='["my-container"]'
 just quickstart-serve
 ```
 

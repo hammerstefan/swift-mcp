@@ -9,9 +9,9 @@ container Workshop connects through a local tunnel with its own caller key.
 | --- | --- | --- |
 | Make your first Swift call with Copilot and an OpenStack RC file | [Guided quickstart](docs/quickstart.md) in `quickstart/` | `swift-mcp-quickstart` |
 | Set up the host server and connect Copilot yourself | [Manual setup below](#before-you-start) using `validation/copilot/` | `swift-validation` |
+| Connect Swift MCP to your own Workshop | [Connect an existing Workshop](#connect-an-existing-workshop) | Your Workshop's `name` |
 
 Copilot CLI connectivity through the validation Workshop has been verified.
-To use another client, see [Connect an existing Workshop](#connect-an-existing-workshop).
 
 ## Before you start
 
@@ -22,9 +22,9 @@ You need:
   `secret-tool` is provided by the `libsecret-tools` package. Run the server as
   the unprivileged user who owns the keyring, not as root.
 - A [dedicated read-only Swift identity](#read-only-swift-deployment) with
-  access to a test container whose name and metadata you can share with
-  Copilot. Use either Keystone v3 password credentials or a pre-issued Swift
-  token with its storage URL.
+  access to a container whose name and metadata you can share with your MCP
+  client and its model provider. Use either Keystone v3 password credentials
+  or a pre-issued Swift token with its storage URL.
 - [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later and a container
   Workshop. Workshop VM tunnels are not supported.
 
@@ -143,11 +143,11 @@ an expired token and restart the server.
 
 ### Restrict access and start
 
-Replace `test-container` with the name of your test container. Set the
+Replace `my-container` with the name of your container. Set the
 allowlist in terminal 1 **before** starting the server:
 
 ```sh
-export SWIFT_MCP_CONTAINERS='["test-container"]'
+export SWIFT_MCP_CONTAINERS='["my-container"]'
 ```
 
 If this variable is unset, callers can access every container the Swift
@@ -247,10 +247,29 @@ and check that both show `manual`.
 
 ## Connect an existing Workshop
 
-Create a [caller key](docs/key-management.md#initial-setup) using the name in
-your Workshop definition. The `system` SDK provides the **slot** (host-side
-endpoint); the client SDK uses the **plug** (Workshop-side endpoint). Merge
-these entries into your definition. Replace `copilot` with your client SDK:
+Use this guide for your own container Workshop (not a VM), whether or not you
+use Copilot. You don't need to launch either bundled Workshop. Your client
+must run inside your Workshop and support Streamable HTTP with a custom
+`X-API-Key` header. The server and Swift credentials stay on the host.
+
+### Set up the host server
+
+Check the [prerequisites](#before-you-start). From the Swift MCP checkout on
+the host, follow [steps 1–3](#1-install-the-server), replacing `swift-validation`
+in the `swift-mcp-keys` commands with the `name` in your Workshop definition.
+Use a distinct name and caller key for each Workshop using this key store.
+Note the numeric `key_id` and set the container allowlist before starting the
+server. If the server is already running with the same key store, Swift
+identity, and allowlist, you only need to provision the caller key; leave the
+server running.
+
+### Add and connect the tunnel
+
+In your Workshop project, edit its definition (for example, `workshop.yaml`
+or `.workshop/my-workshop.yaml`). Merge the following into the existing `sdks`
+list. Add the slot under `system` and the plug under one non-`system` SDK;
+replace `my-sdk` with its name. Keep the existing SDK settings and don't add
+a second entry for the same SDK.
 
 ```yaml
 sdks:
@@ -258,30 +277,79 @@ sdks:
     slots:
       swift-mcp:
         interface: tunnel
-        endpoint: 127.0.0.1:8000
-  - name: copilot
+        endpoint: 127.0.0.1:8000  # Swift MCP on the host
+  - name: my-sdk
     plugs:
       swift-mcp:
         interface: tunnel
-        endpoint: 127.0.0.1:8000
+        endpoint: 127.0.0.1:8000  # Where the client connects inside the Workshop
 ```
 
-From that Workshop's project directory, launch it or refresh the running
-Workshop. Connect the tunnel explicitly, replacing `my-workshop` and
-`copilot` with your Workshop and client SDK names:
+If the Workshop has no non-`system` SDK, create `.workshop/mcp-tunnel/sdk.yaml`
+with just `name: mcp-tunnel` and use `project-mcp-tunnel` in place of `my-sdk`
+in the YAML. This SDK only holds the tunnel plug; it doesn't install a client.
+In Workshop command references, use the bare SDK name (`mcp-tunnel`, without
+`project-`).
+
+If port `8000` is in use, set `SWIFT_MCP_PORT` before starting the server and
+use the same free port on both loopback endpoints and in the client URL.
+The server checks the HTTP `Host` header against its listening port.
+
+From your Workshop's project directory, run `workshop launch my-workshop` if
+it hasn't been launched. Otherwise, run `workshop refresh my-workshop` to apply
+the change; start it first with `workshop start my-workshop` if it's stopped.
+Replace `my-workshop` and `my-sdk` with your Workshop and bare SDK names, then
+connect explicitly if the tunnel isn't already connected:
 
 ```sh
-workshop connect my-workshop/copilot:swift-mcp :swift-mcp
+workshop connect my-workshop/my-sdk:swift-mcp :swift-mcp
 workshop connections my-workshop
 ```
 
-Configure the client for Streamable HTTP at `http://127.0.0.1:8000/mcp` and
-send the Workshop's caller key in the `X-API-Key` header on every request.
-Pass the key from the host keyring for a single command using `--env`, as in
-the [Copilot example](#pass-the-caller-key-to-copilot). Keep the value out of
-the Workshop definition and MCP configuration file. Verify the setup with
-`get_container_stats` on an allowed container. See the [Workshop secrets guide](https://ubuntu.com/workshop/docs/how-to/develop-with-workshops/provide-secrets.md)
-and [OpenCode MCP configuration guide](https://opencode.ai/docs/mcp-servers) for client setup.
+Check that `connections` shows the tunnel as `manual`. A `connections:` entry
+in the definition doesn't connect this tunnel. Reconnect after changing either
+endpoint and refreshing, or after `workshop restore`.
+
+### Configure and verify the client
+
+Set the client URL to `http://127.0.0.1:8000/mcp` with Streamable HTTP. Configure
+it to send `X-API-Key` on every request, taking the value from the environment
+variable `SWIFT_MCP_CALLER_KEY`. Use your client's environment-variable syntax.
+For example, in [OpenCode](https://opencode.ai/docs/mcp-servers/#remote), set the
+header value to `{env:SWIFT_MCP_CALLER_KEY}` and set `oauth` to `false`.
+Do not put the key itself in configuration files or command arguments.
+
+From your Workshop's project directory **on the host**, in the unlocked keyring
+session, replace `42` with the active key ID, `my-workshop` with your Workshop
+name, and `your-mcp-client` with the command that starts your client:
+
+```sh
+(
+  set +x
+  name=my-workshop
+  key_id=42
+  if ! key="$(secret-tool lookup service swift-mcp purpose caller workshop "$name" key-id "$key_id")" ||
+     [ -z "$key" ]; then
+    printf '%s\n' 'Cannot retrieve the Swift MCP caller key. Check the keyring and key ID.' >&2
+    exit 1
+  fi
+  SWIFT_MCP_CALLER_KEY="$key" \
+    workshop exec --env SWIFT_MCP_CALLER_KEY "$name" -- your-mcp-client
+)
+```
+
+The tunnel only provides network access. The client and its child processes
+can read the caller key during this run. Keep both tunnel endpoints on loopback
+and share only data approved for the client's model provider.
+
+Call `get_container_stats` on an allowed container and check the tool result
+for `object_count` and `bytes_used`. `list_containers` alone can succeed without
+contacting Swift. If the client can't connect, check the tunnel and server;
+if it reports HTTP 401, check the key ID and header without printing the key.
+
+When you're done, exit the client and disconnect the tunnel with
+`workshop disconnect my-workshop/my-sdk:swift-mcp`. To retire the Workshop's
+access or respond to a suspected leak, [revoke its key](docs/key-management.md#revoke-a-caller-key).
 
 ## Available tools and limits
 

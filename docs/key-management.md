@@ -89,7 +89,7 @@ cannot choose a key while two are active.
 2. **Test the new key in the actual client.** Deliver the replacement using
    the new ID. Restart the client with that key (for the quickstart, replace
    `42` in `KEY_ID=42 just quickstart-copilot` in terminal 2). Make a Swift
-   tool call, such as `get_container_stats` on an allowed test container. If
+   tool call, such as `get_container_stats` on an allowed container. If
    the call fails, keep using the old key and do not confirm the replacement.
 3. **Confirm the replacement.** Only after the call succeeds, replace `NEW_ID`
    below with the ID you tested:
