@@ -1,189 +1,235 @@
 # Swift MCP and Workshop quickstart
 
-Run Swift MCP on your Linux host and use Copilot CLI inside the included
-`swift-mcp-quickstart` workshop to check the metadata of one Swift container.
-You do not need Copilot CLI or a Copilot token on the host before you start.
+Use Copilot CLI to check the object count and bytes used by one Swift test
+container. Swift MCP runs on your Linux host; Copilot runs in the included
+`swift-mcp-quickstart` Workshop. You don't need to install Copilot CLI or
+create a Copilot token before you start.
+
+Use the [one-command quickstart](#one-command-quickstart) for a guided first
+run. Use the [two-terminal alternative](#manual-two-terminal-alternative) to
+start the server and Copilot separately with the project in `quickstart/`.
+
+## Before you start
+
+- **Host:** Install Python 3.11 or later, [uv](https://docs.astral.sh/uv/),
+  [just](https://just.systems/man/en/installation.html), and
+  [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later. The wizard
+  requires Bash 5.1 or later. Use the included container Workshop; Workshop
+  VMs do not support tunnels. Port `8000` must be free on `127.0.0.1`.
+- **Keyring:** Unlock the default collection in your host's Secret Service
+  keyring. Run all shell commands from the repository root on the host as the
+  unprivileged user who owns that keyring.
+- **Copilot:** Use a GitHub account with access to Copilot CLI.
+- **Swift:** Choose a test container whose name and metadata you can share
+  with Copilot's model provider. Prefer a [read-only Swift identity](../README.md#read-only-swift-deployment).
+  For the wizard, you need an [OpenStack RC file](../README.md#openstack-rc-file)
+  with that identity's credentials. Keep the file outside the checkout, owned
+  by your user, with no permissions for group or other users.
 
 ## One-command quickstart
 
-From the repository root, run:
+The wizard creates a new Workshop for each run and prints its project path.
+It keeps the container and your project files when you exit. If the wizard
+reports an existing Workshop for `quickstart/`, use the two-terminal alternative
+to work with that Workshop.
 
 ```sh
 just quickstart
 ```
 
-The wizard prompts for a protected OpenStack RC file path and a container
-allowlist if `SWIFT_MCP_OPENRC` or `SWIFT_MCP_CONTAINERS` is unset or empty.
+1. When prompted, enter the path to your RC file and the name of your test
+   container. To skip these prompts, set the variables before running
+   `just quickstart`:
 
-Alternatively, supply both settings in your host environment before starting:
+   ```sh
+   export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
+   export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
+   ```
 
-```sh
-export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
-export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
-just quickstart
-```
+2. If the quickstart Copilot token is missing, the wizard opens the GitHub
+   token form. Follow the on-screen instructions and paste the token only at
+   the hidden prompt. The wizard stores it in your host keyring.
+3. The wizard creates or reuses the Workshop's MCP caller key, starts Swift
+   MCP on the host, and opens Copilot in the Workshop. You don't need to
+   enter a key ID. Once Copilot opens, verify the connection below.
 
-This requires: Linux, Bash 5.1 or later, Python 3.11 or later, `uv`, `just`, Workshop
-0.9.8 or later, and an unlocked default Secret Service keyring. 
-Run as the unprivileged user who owns the keyring. 
-Keep its RC file outside the checkout, owned by that user and not
-readable or writable by group or other users.  See [RC file constraints](../README.md#openstack-rc-file).
+## Verify one Swift tool call
 
-The wizard requires port `127.0.0.1:8000` and refuses to take over an existing
-`swift-mcp-quickstart` Workshop in this checkout.
+1. In Copilot, open `/mcp` and check that `swift-mcp` is listed.
+2. Enter this prompt, replacing `quickstart-test` with your test container:
 
-If the quickstart Copilot token is missing, the wizard opens the fine-grained
-token form and asks you to paste the token at a hidden prompt. It stores the
-token in your host keyring.
+   > Use `get_container_stats` from `swift-mcp` for `quickstart-test`.
+   > Show the object count and bytes used. Do not read any objects.
 
-It creates or reuses a dedicated  MCP caller key and selects its ID automatically.  
+3. If Copilot asks for approval, approve only that call. Open the **tool
+   result** and look for `object_count` and `bytes_used`. Those fields confirm
+   that Swift returned container metadata. Copilot's summary alone doesn't
+   confirm this, and `list_containers` only echoes the configured allowlist.
 
-The wizard installs Swift MCP in a temporary environment, starts the server on
-the host, and launches Copilot in a temporary container Workshop project. 
+**If you used the wizard:** Exit Copilot. The wizard disconnects the token and
+tunnel, stops Swift MCP and the Workshop, and removes the temporary server
+environment. It prints the path to your saved project. The Copilot token and
+[caller-key credentials](key-management.md) remain available for the next run.
+If shutdown doesn't finish, see [Recover an interrupted wizard run](#recover-an-interrupted-wizard-run).
 
-To test functionality, in Copilot, open `/mcp`, then request `get_container_stats` 
-for an allowed test container. Check the actual tool result, not just the agent's
-summary.
-
-On exit, interruption, or failure, the wizard disconnects its interfaces,
-stops its server, and removes its Workshop and temporary project. **Files
-created in that project are discarded.** The stored token, caller key, pepper,
-and key database remain; shared `uv` and Workshop caches may also remain. A
-power loss or `SIGKILL` cannot run cleanup. Use `workshop list --global` to
-find a leftover project in a `swift-mcp-quickstart.*` temporary directory. If
-removal fails, the wizard prints that directory: inspect its
-`workshop -p <path>/project changes` and `tasks`, then remove that Workshop
-when safe. Once the Workshop is removed, remove that temporary directory. Do
-not remove unrelated Workshops or credentials.
+**If you used two terminals:** Follow [Stop and disconnect](#stop-and-disconnect).
 
 ## Manual two-terminal alternative
 
-### Before you start
+Use this path to run the server and Copilot from separate host terminals. It
+uses the Workshop project in `quickstart/`, which is mounted at `/project`.
+Install `secret-tool` on the host (`libsecret-tools` on Ubuntu).
 
-- Have a checkout of this repository, Python 3.11 or later, and
-  [uv](https://docs.astral.sh/uv/).
-- Install [`just`](https://just.systems/man/en/installation.html) on the host.
-- Have a working [Workshop](https://ubuntu.com/workshop/docs/) installation
-  (0.9.8 or later). Use the included container workshop, not a VM; Workshop
-  VMs do not support tunnels.
-- Use an unlocked default collection in your host user-session Secret Service
-  keyring and install `secret-tool` (`libsecret-tools` on Ubuntu).
-- Have a GitHub account with access to Copilot CLI.
-- Have an OpenStack RC file for the Swift identity and the name of your container.
-	- Using a [read-only Swift identity](../README.md#read-only-swift-deployment) is highly recommended.
+### 1. Store the Copilot token
 
-Run all shell commands from the repository root **on the host**. Workshop
-mounts only `quickstart/` at `/project`; keep your RC file outside the
-entire checkout in a protected, owner-only location.
+If the quickstart token is already in your keyring and still valid, skip to
+step 2. Otherwise, open the [prefilled GitHub token form](https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read)
+and check these settings before generating the token:
 
-## 1. Create a Copilot token
+- **Resource owner:** your personal account
+- **Expiration:** seven days
+- **Repository access:** Public repositories
+- **Permissions → Account:** Copilot Requests, Read. Add no other permissions.
 
-Open the [prefilled fine-grained token form](https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read).
-Before generating the token, check that it expires in seven days, the
-**Resource owner** is your personal account, and **Repository access** is
-**Public repositories**. Under **Permissions → Account**, select
-**Copilot Requests** with **Read** access if it isn't already selected. Do not
-add other permissions. See [GitHub's authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli#authenticating-with-environment-variables).
-
-Store the token in the host keyring. Paste it only at the `secret-tool` prompt:
+In **terminal 1**, run this command and paste the token only at the prompt:
 
 ```sh
 secret-tool store --label="Swift MCP quickstart Copilot" --collection=default \
   service copilot-cli username swift-mcp-quickstart
 ```
 
-The [quickstart Workshop definition](../quickstart/workshop.yaml) already uses
-these lookup labels. You do not need to edit it. The lookup must match exactly
-one keyring item. Do not paste the token into YAML, a shell command, or Copilot
-chat.
+Keep the `service` and `username` values as shown: the [Workshop definition](../quickstart/workshop.yaml)
+uses them to find exactly one keyring item. Never paste the token into YAML,
+a shell command, or Copilot chat. See [GitHub's authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli#authenticating-with-environment-variables).
 
-## 2. Install Swift MCP
+### 2. Install Swift MCP
 
-In your first host terminal, install the server:
+In **terminal 1**, run:
 
 ```sh
 uv sync --locked
 ```
 
-The next step creates or reuses the Workshop's MCP caller key and prints its
-numeric ID. The key itself stays in your host keyring. This key authenticates
-Copilot to Swift MCP; the Copilot token authenticates Copilot to GitHub. If key
-setup fails, see [key management](key-management.md) rather than deleting or
-overwriting existing state.
+### 3. Start the server and connect the Workshop
 
-Swift MCP parses the RC file; it does not source it. The required values must
-be present as supported assignments. If the file needs to prompt for a
-password or run shell commands to set any of those values, follow the
-[host environment setup](../README.md#keystone-v3-password) in the first
-terminal and omit `SWIFT_MCP_OPENRC` below.
+In **terminal 1**, choose how to supply Swift credentials:
 
-## 3. Start the server and connect the Workshop
+- **RC file:** Swift MCP reads assignments without running shell commands.
+  Set the path to your file:
 
-In the first terminal, replace the example RC path and container name:
+  ```sh
+  export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
+  ```
+
+- **Environment:** If your RC file needs to prompt for a password or run
+  commands to set credentials, leave `SWIFT_MCP_OPENRC` unset. Follow the
+  [host environment setup](../README.md#keystone-v3-password) in this terminal.
+
+Set the allowlist to your test container and start the server:
 
 ```sh
-export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
 export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
 just quickstart-serve
 ```
 
-`just quickstart-serve` starts Swift MCP on `127.0.0.1:8000`, launches or starts
-the Workshop if needed, and connects the tunnel and Copilot token. It creates a
-caller key if one does not exist and reuses an existing unambiguous active key;
-it refuses incomplete or ambiguous key state. Note the printed caller key ID.
-Leave this terminal open and continue when the recipe prompts you to run Copilot.
+The recipe creates or reuses the Workshop's **MCP caller key** and prints its
+numeric **ID**. The key is stored in your host keyring. Copilot uses this key
+to authenticate to Swift MCP and the separate Copilot token to authenticate
+to GitHub. If key setup fails, see [key management](key-management.md) before
+changing any stored keys.
 
-If launch or a connection fails, run `workshop -p quickstart changes` and then
-`workshop -p quickstart tasks <change-id>` with the failed change's ID.
-If setup was interrupted or cleanup failed, check
-`workshop -p quickstart connections` and disconnect any remaining quickstart
-connections before retrying.
+The recipe starts Swift MCP on `127.0.0.1:8000`, starts or launches the
+Workshop if needed, and connects the tunnel and token. **Note the printed
+caller key ID and leave terminal 1 open.** Wait for the prompt to run Copilot.
 
-## 4. Start copilot in workshop
+### 4. Start Copilot in the Workshop
 
-In a second host terminal, replace `42` with the caller key ID printed in step 3:
+In **terminal 2**, replace `42` with the caller key ID from terminal 1:
 
 ```sh
 KEY_ID=42 just quickstart-copilot
 ```
 
-The recipe retrieves the caller key from the host keyring without displaying it
-and passes it to Copilot for this run only.
+The recipe retrieves the key without displaying it and passes it to Copilot
+for this run only. [Verify one Swift tool call](#verify-one-swift-tool-call).
 
-## 5. Verify one Swift tool call
+### Stop and disconnect
 
-In Copilot, open `/mcp` and check for `swift-mcp`. Then enter the following
-prompt with your test container name:
+1. Exit Copilot in terminal 2.
+2. Press `Ctrl+C` in terminal 1 to stop Swift MCP and disconnect the token
+   and tunnel.
+3. In terminal 2, run `workshop -p quickstart stop`. This keeps the Workshop
+   for your next run.
 
-> Use the `swift-mcp` tool `get_container_stats` for `quickstart-test`.
-> Show the object count and bytes used. Do not read any objects.
+## Troubleshooting
 
-Approve only that tool call if prompted. Check the actual tool result for
-`object_count` and `bytes_used`, not just Copilot's summary. With an allowlist,
-`list_containers` only echoes allowed names, so it does not prove Swift is
-reachable.
+- **Manual Workshop launch or connection failed:** Run `workshop -p quickstart changes`,
+  then `workshop -p quickstart tasks <change-id>` with the failed change's ID.
+  After an interrupted setup, run `workshop -p quickstart connections` and
+  disconnect any remaining quickstart connections before retrying.
+- **Copilot asks you to sign in:** Check the `github-token` connection. For
+  the two-terminal setup, run `workshop -p quickstart connections`. For the
+  wizard, run `workshop -p "<printed project path>" connections`, replacing
+  the placeholder with the path from `Workshop project:`. Check the token's
+  keyring labels, expiration, and **Copilot Requests** permission.
+- **Swift MCP returns HTTP 401:** Check the MCP caller key ID. In the
+  two-terminal setup, `KEY_ID` must match the ID printed in terminal 1.
 
-If Copilot asks you to sign in, check the `github-token` connection, keyring
-lookup labels, token expiration, and **Copilot Requests** permission. If the
-MCP server returns HTTP 401, check the caller key ID instead. Do not print
-either secret while troubleshooting. See [more troubleshooting](../README.md#troubleshooting).
+Do not print either secret while troubleshooting. See [more troubleshooting](../README.md#troubleshooting).
 
-## Stop and disconnect
+### Access files from a wizard run
 
-Exit Copilot and press `Ctrl+C` in the first terminal. The recipe stops Swift
-MCP and disconnects the token and tunnel. In the second terminal, stop the
-Workshop:
+Files in `/project` are also available at the printed host project path. To
+access files elsewhere in the stopped Workshop, use that path to start it and
+open a shell:
 
 ```sh
-workshop -p quickstart stop
+project='/path/printed/by/the/wizard'
+workshop -p "$project" start
+workshop -p "$project" shell
 ```
+
+Each saved Workshop consumes storage. `workshop remove` deletes its container
+files, so back up anything you need before choosing to remove it.
+
+### Recover an interrupted wizard run
+
+If the wizard couldn't stop its Workshop, use the path it printed after
+`Workshop project:`. If you lost the output, run `workshop list --global` and
+identify the project for that run under `~/.local/share/swift-mcp/quickstarts/`.
+
+1. Replace the example session name with the one from your project path.
+   Check its connections and recent changes:
+
+   ```sh
+   project="$HOME/.local/share/swift-mcp/quickstarts/session.ABC12345"
+   workshop -p "$project" connections
+   workshop -p "$project" changes
+   ```
+
+2. If a change failed, inspect it. Replace `42` with the ID from `changes`:
+
+   ```sh
+   workshop -p "$project" tasks 42
+   ```
+
+3. If the quickstart token or tunnel is still connected, disconnect only the
+   connections still listed for this run:
+
+   ```sh
+   workshop -p "$project" disconnect swift-mcp-quickstart/copilot:github-token
+   workshop -p "$project" disconnect swift-mcp-quickstart/copilot:swift-mcp
+   ```
+
+4. If the Workshop is still running, run `workshop -p "$project" stop`.
+   This preserves files in both the project and the container.
 
 ## Security notes
 
-The tunnel is not authentication. Any process in the workshop can request the
-connected Copilot token, and the MCP caller key is available to Copilot and
-its child processes during the run. Keep approval prompts enabled and use
-only test names and metadata you can share with Copilot's model provider.
-Keep the RC file on the host and never add secrets to the checkout or logs.
+The tunnel does not authenticate callers. Any process in the Workshop can
+request the connected Copilot token. Copilot and its child processes can
+access the MCP caller key during the run. Keep approval prompts enabled and
+keep Swift credentials on the host, outside the checkout and logs.
+
 If this was a one-time test, revoke the [GitHub token](https://github.com/settings/personal-access-tokens)
-and [MCP caller key](key-management.md#routine-rotation) when finished.
+and the [MCP caller key](key-management.md#routine-rotation) when finished.
