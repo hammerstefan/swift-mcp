@@ -20,6 +20,28 @@ from swift_read_only_mcp.key_management import main as manage_keys
 
 WORKSHOP = "swift-mcp-quickstart"
 TOKEN_ATTRIBUTES = {"service": "copilot-cli", "username": WORKSHOP}
+VALIDATION_MESSAGES = {
+    "Protect the RC file and keep it outside the checkout": (
+        "The Swift RC file must be outside the checkout, owned by you, "
+        "and have owner-only permissions (0600)."
+    ),
+    "Invalid Swift RC file": (
+        "The Swift RC file is missing, unreadable, or not a valid regular file."
+    ),
+    "Invalid Swift RC assignment": (
+        "The Swift RC file has an invalid or unsupported assignment; "
+        "it is parsed as data, not executed as a shell script."
+    ),
+    "Invalid container allowlist": (
+        "SWIFT_MCP_CONTAINERS must be a JSON array of valid container names."
+    ),
+    "Swift authentication is not configured": (
+        "The Swift RC file does not contain complete supported credentials."
+    ),
+    "Swift TLS verification must remain enabled": "Swift TLS verification must remain enabled.",
+    "Invalid Swift endpoint URL": "The Swift RC file contains an invalid or insecure endpoint URL.",
+    "Invalid Swift TLS configuration": "The Swift TLS certificate configuration is invalid.",
+}
 
 
 def copilot_token_status() -> int:
@@ -48,8 +70,11 @@ def copilot_token_status() -> int:
 
 def validate_config(root: Path) -> None:
     """Validate settings without opening a caller database or connecting to Swift."""
-    path = Path(os.environ["SWIFT_MCP_OPENRC"]).resolve(strict=True)
-    info = path.stat()
+    try:
+        path = Path(os.environ["SWIFT_MCP_OPENRC"]).resolve(strict=True)
+        info = path.stat()
+    except OSError:
+        raise ValueError("Invalid Swift RC file") from None
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.getuid()
@@ -146,9 +171,12 @@ def main() -> int:
                 raise ValueError("Caller key unavailable")
             print(key)
         return 0
-    except Exception:
+    except Exception as exc:
+        message = None
+        if args.action == "validate" and isinstance(exc, ValueError):
+            message = VALIDATION_MESSAGES.get(str(exc))
         print(
-            "Quickstart check failed; inspect configuration and local keyring state",
+            message or "Quickstart check failed; inspect configuration and local keyring state",
             file=sys.stderr,
         )
         return 1

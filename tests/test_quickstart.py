@@ -1,6 +1,7 @@
 """Validate quickstart input and keyring checks without using the host keyring."""
 
 import io
+import sys
 
 import pytest
 
@@ -88,3 +89,59 @@ def test_validate_config_requires_protected_rc_and_valid_allowlist(monkeypatch, 
     monkeypatch.delitem(quickstart.os.environ, "SWIFTCLIENT_INSECURE")
     with pytest.raises(ValueError, match="outside"):
         quickstart.validate_config(tmp_path)
+
+
+def test_validate_cli_explains_rc_restrictions_without_printing_secrets(
+    monkeypatch, tmp_path, capsys
+):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = root / "example_creds.rc"
+    rc.write_text("OS_AUTH_TOKEN='private-token'\n")
+    rc.chmod(0o664)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"SWIFT_MCP_OPENRC": str(rc), "SWIFT_MCP_CONTAINERS": '["cloud-images"]'},
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", str(root)])
+
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert "outside the checkout" in output.err
+    assert "owner-only" in output.err
+    assert "private-token" not in output.out + output.err
+
+
+def test_validate_cli_reports_invalid_allowlist_without_printing_rc(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = tmp_path / "swift.rc"
+    rc.write_text(
+        "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n"
+    )
+    rc.chmod(0o600)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"SWIFT_MCP_OPENRC": str(rc), "SWIFT_MCP_CONTAINERS": '["invalid/name"]'},
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", str(root)])
+
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert "SWIFT_MCP_CONTAINERS" in output.err
+    assert "private-token" not in output.out + output.err
+
+
+def test_validate_cli_never_prints_unrecognized_exception_details(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", "/checkout"])
+
+    def fail(_root):
+        raise ValueError("private-token")
+
+    monkeypatch.setattr(quickstart, "validate_config", fail)
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert "private-token" not in output.out + output.err
+    assert "Quickstart check failed" in output.err
