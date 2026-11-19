@@ -19,7 +19,7 @@ You need:
   `secret-tool` is provided by the `libsecret-tools` package. Run the server as
   the unprivileged user who owns the keyring, not as root.
 - A test Swift account and either a Keystone v3 password or a pre-issued Swift
-  token and storage URL. Use a Swift identity with read-only permissions.
+  token and storage URL. Use a [dedicated read-only Swift identity](#read-only-swift-deployment).
 - [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later and a container
   Workshop. Workshop VM tunnels are not supported.
 
@@ -173,7 +173,9 @@ export SWIFT_MCP_CONTAINERS='["test-container"]'
 
 If this variable is unset, callers can access every container the Swift
 identity can read. Set it to `[]` to allow none. All callers share the same
-Swift identity and allowlist.
+Swift identity and allowlist. Container names must not contain `/` or be `.` or
+`..`. Object names can contain `/`, but cannot contain `.` or `..` as complete
+segments.
 
 Start the server in the foreground:
 
@@ -339,12 +341,35 @@ processes. Disconnect interfaces when they are not needed and review agent
 permissions before running an agent. Swift object contents are untrusted and may
 be sent to the agent's model provider.
 
-The MCP interface is read-only, but it does not remove write privileges from
-the underlying Swift identity. Protect the host keyring, key database, and
-logs, and use a read-only Swift identity. The documented local GNOME Keyring
-AES-128-CBC exception does not authenticate ciphertext; an
+Protect the host keyring, key database, and logs. The documented local GNOME
+Keyring AES-128-CBC exception does not authenticate ciphertext; an
 authenticated-encryption store is safer. See [key management](docs/key-management.md)
 for storage and rotation limitations.
+
+### Read-only Swift deployment
+
+The MCP server exposes only read tools. Its Swift storage transport permits
+only `GET` and `HEAD` and rejects redirects. Password mode sends a separate
+token-issuance `POST` to Keystone, which also rejects redirects. Use a
+pre-issued token if the server must not issue that authentication `POST`.
+
+Before deploying, have your Swift administrator provision a dedicated identity
+whose effective policy and ACLs deny all account, container, and object
+writes, including metadata and ACL changes. The server validates credential
+configuration, not effective Swift permissions. Do not give it an account
+owner, operator, reseller administrator, or other write-capable credential.
+Keep certificate verification enabled and treat the configured endpoints or
+the Keystone catalog as trusted configuration.
+
+For Swift with Keystone auth, one option is to grant the dedicated identity
+access through `X-Container-Read` only, using the `project-id:user-id` form.
+Do not grant it `X-Container-Write` access, including through a group or role.
+Point `OS_STORAGE_URL` at the account that owns those containers and set
+`SWIFT_MCP_CONTAINERS` to the intended names. This avoids account-wide calls,
+which container-level ACLs do not grant. See the [Swift ACL documentation](https://docs.openstack.org/swift/latest/overview_acl.html).
+Review the effective policy before enabling MCP access and after any change to
+roles or ACLs. If you also use a read-only gateway, permit only `GET` and `HEAD`
+for the intended Swift account, and prevent the MCP host from bypassing it.
 
 ## Development checks
 

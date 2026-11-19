@@ -19,7 +19,7 @@ from swift_read_only_mcp.swift import SwiftBackend
 @st.composite
 def allowlist_cases(draw):
     # Include Unicode and punctuation, but only names accepted by the server.
-    name = st.text(alphabet="abc-/é中😀", min_size=1, max_size=8)
+    name = st.text(alphabet="abc-é中😀", min_size=1, max_size=8)
     names = draw(st.lists(name, unique=True, max_size=8))
     limit = draw(st.integers(min_value=1, max_value=5))
     candidates = names + [n[:1] for n in names]

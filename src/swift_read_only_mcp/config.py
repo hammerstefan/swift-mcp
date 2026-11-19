@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from swiftclient.utils import config_true_value
-
 from swift_read_only_mcp.openrc import load_openrc
 
 CONTAINER_NAME_MAX_BYTES = 256
@@ -39,7 +37,8 @@ _KEYSTONE_OPTIONS = (
     "service_type",
     "endpoint_type",
 )
-_TLS_SETTING_VALUES = ("true", "1", "yes", "on", "t", "y", "false", "0", "no", "off", "f", "n")
+_TRUE_SETTINGS = ("true", "1", "yes", "on", "t", "y")
+_FALSE_SETTINGS = ("false", "0", "no", "off", "f", "n")
 _SWIFT_AUTH_FIELDS = frozenset(
     (
         *_PASSWORD_FIELDS,
@@ -65,6 +64,22 @@ def bounded_text(value: object, byte_limit: int) -> bool:
         return len(value.encode("utf-8")) <= byte_limit
     except UnicodeEncodeError:
         return False
+
+
+def valid_container_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bounded_text(value, CONTAINER_NAME_MAX_BYTES)
+        and "/" not in value
+        and value not in (".", "..")
+    )
+
+
+def valid_object_name(value: str) -> bool:
+    # Swift names may contain slashes, but dot segments can change the HTTP path.
+    return bounded_text(value, OBJECT_NAME_MAX_BYTES) and not any(
+        part in (".", "..") for part in value.split("/")
+    )
 
 
 def safe_swift_endpoint_url(url: str) -> bool:
@@ -195,9 +210,9 @@ def _swift(env: Mapping[str, str]) -> SwiftSettings:
         raise ValueError("Swift authentication is not configured")
 
     raw_insecure = env.get("SWIFTCLIENT_INSECURE", "false").lower()
-    if raw_insecure not in _TLS_SETTING_VALUES:
+    if raw_insecure not in (*_TRUE_SETTINGS, *_FALSE_SETTINGS):
         raise ValueError("Invalid Swift TLS verification setting")
-    insecure = config_true_value(raw_insecure)
+    insecure = raw_insecure in _TRUE_SETTINGS
     if insecure:
         logging.getLogger(__name__).warning(
             "WARNING: Swift TLS certificate verification is disabled by SWIFTCLIENT_INSECURE"
@@ -257,9 +272,7 @@ def _allowlist(env: Mapping[str, str]) -> frozenset[str] | None:
         names: object = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ValueError("Invalid container allowlist") from None
-    if not isinstance(names, list) or any(
-        not bounded_text(name, CONTAINER_NAME_MAX_BYTES) for name in names
-    ):
+    if not isinstance(names, list) or any(not valid_container_name(name) for name in names):
         raise ValueError("Invalid container allowlist")
     return frozenset(names)
 

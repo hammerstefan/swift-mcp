@@ -47,7 +47,7 @@ def test_missing_caller_key_cannot_list_tools(tmp_path, monkeypatch):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
 
 
-def test_valid_caller_key_can_discover_account_statistics(tmp_path, monkeypatch):
+def test_valid_caller_key_discovers_exactly_the_read_only_tools(tmp_path, monkeypatch):
     database = tmp_path / "workshops.db"
     with KeyStore(str(database), pepper="test-pepper", touch=False) as store:
         key = store.create("workshop-one", prefix="smcp", min_entropy=128).key
@@ -80,7 +80,14 @@ def test_valid_caller_key_can_discover_account_statistics(tmp_path, monkeypatch)
         )
 
     assert response.status_code == 200, response.text
-    assert '"name":"get_account_stats"' in response.text
+    assert sorted(tool["name"] for tool in response.json()["result"]["tools"]) == [
+        "get_account_stats",
+        "get_container_stats",
+        "get_object_stats",
+        "list_containers",
+        "list_objects",
+        "read_object",
+    ]
     assert response.headers.get_list("cache-control") == ["no-store"]
 
 

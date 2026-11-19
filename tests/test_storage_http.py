@@ -40,7 +40,7 @@ def test_account_statistics_do_not_expose_swift_secret_headers(tmp_path, monkeyp
         monkeypatch.setenv("OS_AUTH_TOKEN", "fixture-swift-token")
         monkeypatch.setenv("OS_STORAGE_URL", f"http://127.0.0.1:{service.server_port}/v1/AUTH_test")
 
-        with caplog.at_level("DEBUG", logger="swiftclient"):
+        with caplog.at_level("DEBUG", logger="httpx"):
             with TestClient(create_app(), base_url="http://127.0.0.1:8000") as client:
                 response = client.post(
                     "/mcp",
@@ -895,6 +895,16 @@ def test_object_statistics_exclude_private_metadata(tmp_path, monkeypatch):
             "/v3",
             id="storage-override-auth-redirect",
         ),
+        pytest.param(
+            "name",
+            "RedirectRegion",
+            "publicURL",
+            None,
+            False,
+            None,
+            "/v3",
+            id="catalog-auth-redirect",
+        ),
     ],
 )
 def test_keystone_v3_password_authenticates_before_swift_read(
@@ -1129,6 +1139,11 @@ def test_keystone_v3_password_authenticates_before_swift_read(
 
         assert response.status_code == 200, response.text
         assert listing.status_code == 200, listing.text
+        if region == "RedirectRegion":
+            assert [(method, path) for method, path, _ in requests_seen] == [
+                ("POST", "/v3/auth/tokens"),
+                ("POST", "/v3/auth/tokens"),
+            ]
         auth_requests = [item[2]["auth"] for item in requests_seen if item[0] == "POST"]
         assert len(auth_requests) == 2
         for auth in auth_requests:

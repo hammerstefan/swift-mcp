@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 import pytest
@@ -206,6 +206,112 @@ def test_listing_filters_are_validated_before_reaching_swift(tmp_path, name, arg
     assert response.json()["result"]["isError"] is True
     assert error in response.text
     assert requests_seen == []
+
+
+def test_unsafe_storage_names_are_rejected_without_contacting_swift(tmp_path):
+    requests_seen = []
+
+    class RecordingSwift(Quiet):
+        def parse_request(self):
+            if not super().parse_request():
+                return False
+            requests_seen.append(self.command)
+            self.send_error(500)
+            return False
+
+    with swift_service(RecordingSwift) as service:
+        app, key = app_and_key(tmp_path, service.server_port, SWIFT_MCP_CONTAINERS='["visible"]')
+        with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+            for container in (".", "..", "two/parts"):
+                response = call_tool(client, key, "get_container_stats", {"container": container})
+                assert response.json()["result"]["isError"] is True
+                assert "Invalid container name" in response.text
+
+            for object_name in (".", "..", "logs/./report", "logs/../report"):
+                arguments = {"container": "visible", "object_name": object_name}
+                for tool in ("get_object_stats", "read_object"):
+                    response = call_tool(client, key, tool, arguments)
+                    assert response.json()["result"]["isError"] is True
+                    assert "Invalid object name" in response.text
+            uri = "swift://object/visible/" + quote("logs/../report", safe="")
+            response = call(client, key, "resources/read", {"uri": uri})
+            assert "Invalid object name" in response.json()["error"]["message"]
+
+    assert requests_seen == []
+
+
+@pytest.mark.parametrize("name", [".", "..", "two/parts"])
+def test_unsafe_container_allowlist_is_rejected_at_startup(tmp_path, name):
+    with pytest.raises(ValueError, match="Invalid container allowlist"):
+        app_and_key(tmp_path, 1, SWIFT_MCP_CONTAINERS=f'["{name}"]')
+
+
+def test_all_storage_handlers_use_only_get_or_head_and_refuse_redirects(tmp_path):
+    requests_seen = []
+
+    class RedirectingSwift(Quiet):
+        def parse_request(self):
+            if not super().parse_request():
+                return False
+            requests_seen.append((self.command, urlsplit(self.path).path))
+            if self.command not in ("GET", "HEAD"):
+                self.send_error(405)
+                return False
+            return True
+
+        def do_HEAD(self):
+            if self.path.endswith("/small.txt"):
+                self.send_response(200)
+                self.send_header("Content-Length", "1")
+                self.end_headers()
+            else:
+                self.do_GET()
+
+        def do_GET(self):
+            if self.path == "/not-the-storage-endpoint":
+                self.send_error(404)
+                return
+            self.send_response(307)
+            self.send_header(
+                "Location", f"http://localhost:{service.server_port}/not-the-storage-endpoint"
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    container = {"container": "visible"}
+    obj = {**container, "object_name": "nested/report.txt"}
+    with swift_service(RedirectingSwift) as service:
+        app, key = app_and_key(tmp_path, service.server_port)
+        with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+            for tool, arguments in (
+                ("get_account_stats", {}),
+                ("list_containers", {}),
+                ("get_container_stats", container),
+                ("list_objects", container),
+                ("get_object_stats", obj),
+                ("read_object", obj),
+            ):
+                response = call_tool(client, key, tool, arguments)
+                assert response.json()["result"]["isError"] is True
+                assert "fixture-swift-token" not in response.text
+            for uri in (
+                "swift://object/visible/nested%2Freport.txt",
+                "swift://object/visible/small.txt",
+            ):
+                response = call(client, key, "resources/read", {"uri": uri})
+                assert "Swift resource read failed" in response.json()["error"]["message"]
+
+    assert requests_seen == [
+        ("HEAD", "/v1/AUTH_test"),
+        ("GET", "/v1/AUTH_test"),
+        ("HEAD", "/v1/AUTH_test/visible"),
+        ("GET", "/v1/AUTH_test/visible"),
+        ("HEAD", "/v1/AUTH_test/visible/nested/report.txt"),
+        ("GET", "/v1/AUTH_test/visible/nested/report.txt"),
+        ("HEAD", "/v1/AUTH_test/visible/nested/report.txt"),
+        ("HEAD", "/v1/AUTH_test/visible/small.txt"),
+        ("GET", "/v1/AUTH_test/visible/small.txt"),
+    ]
 
 
 def test_read_of_an_empty_object_returns_empty_data(tmp_path):

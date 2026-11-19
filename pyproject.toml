@@ -9,7 +9,7 @@ dependencies = [
   "httpx==0.28.1",
   "mcp>=2,<3",
   "python-keystoneclient==6.0.0",
-  "python-swiftclient==4.11.0",
+  "requests>=2,<3",
   "SecretStorage==3.5.0",
   "uvicorn==0.54.0",
 ]

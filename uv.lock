@@ -1635,18 +1635,6 @@ wheels = [
 ]
 
 [[package]]
-name = "python-swiftclient"
-version = "4.11.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "requests" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/91/631ff6c1f6420f8e5017e60d0e66246d1dd5b9a61a70038a198bab404416/python_swiftclient-4.11.0.tar.gz", hash = "sha256:9d96146f5c2948c08cbf221eecfc3b87f2f631f1995e5e5d6e1b800ea74233cc", size = 210953, upload-time = "2026-08-28T09:13:37.188Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/25/0d/e0edd370dd69d7db633ef1d97910dd1118d8ccafab48854fde9143cae8f0/python_swiftclient-4.11.0-py3-none-any.whl", hash = "sha256:5c48a8cda1ddee6366ed6efcd262bbf0c99f72b635c634bc829a08ea2c7c33c0", size = 88543, upload-time = "2026-08-28T09:13:36.146Z" },
-]
-
-[[package]]
 name = "pywin32"
 version = "312"
 source = { registry = "https://pypi.org/simple" }
@@ -2032,7 +2020,7 @@ dependencies = [
     { name = "httpx" },
     { name = "mcp" },
     { name = "python-keystoneclient" },
-    { name = "python-swiftclient" },
+    { name = "requests" },
     { name = "secretstorage" },
     { name = "uvicorn" },
 ]
@@ -2052,7 +2040,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "mcp", specifier = ">=2,<3" },
     { name = "python-keystoneclient", specifier = "==6.0.0" },
-    { name = "python-swiftclient", specifier = "==4.11.0" },
+    { name = "requests", specifier = ">=2,<3" },
     { name = "secretstorage", specifier = "==3.5.0" },
     { name = "uvicorn", specifier = "==0.54.0" },
 ]

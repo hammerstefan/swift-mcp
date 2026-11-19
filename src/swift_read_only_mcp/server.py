@@ -6,14 +6,12 @@ import os
 import re
 import sqlite3
 from collections.abc import Mapping
-from urllib.parse import quote
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ResourceError, ToolError
 from fastmcp.resources import ResourceContent, ResourceResult, ResourceSecurity
 from generateapikey.keystore import KeyStore
-from swiftclient.client import Connection, logger_settings
-from swiftclient.exceptions import ClientException
 
 from swift_read_only_mcp.config import (
     CONTAINER_NAME_MAX_BYTES,
@@ -21,9 +19,11 @@ from swift_read_only_mcp.config import (
     Settings,
     bounded_text,
     load_settings,
+    valid_container_name,
+    valid_object_name,
 )
 from swift_read_only_mcp.gate import MAX_REQUEST_BODY_BYTES, CallerKeyGate
-from swift_read_only_mcp.swift import SwiftBackend
+from swift_read_only_mcp.swift import SwiftBackend, SwiftBodyTooLarge, read_bounded_body
 
 __all__ = ["MAX_REQUEST_BODY_BYTES", "CallerKeyGate", "create_app"]
 
@@ -54,15 +54,13 @@ def create_app(environ: Mapping[str, str] | None = None) -> CallerKeyGate:
 def _silence_dependency_logs() -> None:
     # Swift/Keystone debug logs can contain credential prefixes, arbitrary
     # user metadata and object bytes. Keep them out of even DEBUG host logs.
-    logger_settings["redact_sensitive_headers"] = True
-    logger_settings["reveal_sensitive_prefix"] = 0
     for logger_name in (
-        "swiftclient",
         "keystoneclient",
         "keystoneauth",
         "keystoneauth1",
         "httpx",
         "httpcore",
+        "urllib3",
     ):
         dependency_logger = logging.getLogger(logger_name)
         if not any(
@@ -129,14 +127,14 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
     byte_max = settings.limits.object_bytes
 
     def check_container(container: str, error: type[Exception] = ToolError) -> None:
-        if not bounded_text(container, CONTAINER_NAME_MAX_BYTES):
+        if not valid_container_name(container):
             raise error("Invalid container name")
         if allowed_containers is not None and container not in allowed_containers:
             raise error("Container not accessible")
 
     def check_object(container: str, object_name: str, error: type[Exception] = ToolError) -> None:
         check_container(container, error)
-        if not bounded_text(object_name, OBJECT_NAME_MAX_BYTES):
+        if not valid_object_name(object_name):
             raise error("Invalid object name")
 
     def check_page_size(limit: int | None) -> int:
@@ -152,7 +150,7 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
         if allowed_containers is not None:
             raise ToolError("Container not accessible: account totals include excluded containers")
         try:
-            headers = swift.connection().head_account()
+            headers = swift.head()
             return {
                 name: int(headers[header])
                 for name, header in (
@@ -193,11 +191,11 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
                 params["marker"] = marker
             if prefix:
                 params["prefix"] = prefix
-            raw_entries = swift.list("", params)
+            raw_entries = swift.list(None, params)
             if len(raw_entries) > page_size:
                 raise ToolError("Swift returned an oversized container page")
             if any(
-                not bounded_text(entry.get("name"), CONTAINER_NAME_MAX_BYTES)
+                not valid_container_name(entry.get("name"))
                 or any(
                     key in entry and not _nonnegative_integer(entry[key])
                     for key in ("count", "bytes")
@@ -223,7 +221,7 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
 
         check_container(container)
         try:
-            headers = swift.connection().head_container(container)
+            headers = swift.head(container)
             return {
                 name: int(headers[header])
                 for name, header in (
@@ -259,7 +257,7 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
                 params["prefix"] = prefix
             if delimiter:
                 params["delimiter"] = delimiter
-            raw_entries = swift.list("/" + quote(container, safe=""), params)
+            raw_entries = swift.list(container, params)
             if len(raw_entries) > page_size:
                 raise ToolError("Swift returned an oversized object page")
             for entry in raw_entries:
@@ -286,7 +284,7 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
 
         check_object(container, object_name)
         try:
-            headers = swift.connection().head_object(container, object_name)
+            headers = swift.head(container, object_name)
             result: dict[str, object] = {
                 key: headers[header]
                 for key, header in (
@@ -313,51 +311,40 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
         if offset < 0 or read_length < 1 or read_length > byte_max:
             raise ToolError("Invalid byte range")
         try:
-            connection = swift.connection()
-            status: dict[str, object] = {}
-            headers, stream = connection.get_object(
-                container,
-                object_name,
-                resp_chunk_size=min(65536, read_length + 1),
-                response_dict=status,
-                headers={"Range": f"bytes={offset}-{offset + read_length - 1}"},
-            )
-        except ClientException as exc:
-            if exc.http_status != 416:
+            with swift.get_object(
+                container, object_name, byte_range=(offset, offset + read_length - 1)
+            ) as response:
+                headers = response.headers
+                content_type = headers.get("content-type", "application/octet-stream")
+                if response.status_code == 200 and headers.get("content-length") == "0":
+                    # Swift ignores a Range header on an empty object.
+                    return _object_payload(b"", content_type, 0, offset)
+                content_range = headers.get("content-range", "")
+                matched = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                if response.status_code != 206 or matched is None:
+                    raise ToolError("Swift did not honor the byte range")
+                start, end, size = map(int, matched.groups())
+                if start != offset or end < start or end >= offset + read_length or size <= end:
+                    raise ToolError("Swift returned an invalid byte range")
+                try:
+                    data = read_bounded_body(response, end - start + 1)
+                except (SwiftBodyTooLarge, httpx.RemoteProtocolError):
+                    raise ToolError("Swift returned an invalid byte range") from None
+                if len(data) != end - start + 1:
+                    raise ToolError("Swift returned an invalid byte range")
+                return _object_payload(data, content_type, size, offset)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 416:
                 raise ToolError("Swift object read failed") from None
-            return read_past_end(connection, container, object_name, offset)
+            return read_past_end(container, object_name, offset)
         except ToolError:
             raise
         except Exception:
             raise ToolError("Swift object read failed") from None
-        try:
-            content_type = headers.get("content-type", "application/octet-stream")
-            if status.get("status") == 200 and headers.get("content-length") == "0":
-                # Swift ignores a Range header on an empty object.
-                return _object_payload(b"", content_type, 0, offset)
-            content_range = headers.get("content-range", "")
-            matched = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
-            if status.get("status") != 206 or matched is None:
-                raise ToolError("Swift did not honor the byte range")
-            start, end, size = map(int, matched.groups())
-            if start != offset or end < start or end >= offset + read_length or size <= end:
-                raise ToolError("Swift returned an invalid byte range")
-            data = stream.read(read_length + 1)
-            if len(data) > read_length or len(data) != end - start + 1:
-                raise ToolError("Swift returned an invalid byte range")
-            return _object_payload(data, content_type, size, offset)
-        except ToolError:
-            raise
-        except Exception:
-            raise ToolError("Swift object read failed") from None
-        finally:
-            stream.close()
 
-    def read_past_end(
-        connection: Connection, container: str, object_name: str, offset: int
-    ) -> dict[str, object]:
+    def read_past_end(container: str, object_name: str, offset: int) -> dict[str, object]:
         try:
-            head = connection.head_object(container, object_name)
+            head = swift.head(container, object_name)
             size = int(head["content-length"])
         except Exception:
             raise ToolError("Swift object read failed") from None
@@ -376,19 +363,13 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
 
         check_object(container, object_name, ResourceError)
         try:
-            head = swift.connection().head_object(container, object_name)
+            head = swift.head(container, object_name)
             head_size = int(head["content-length"])
             if head_size > byte_max or head_size < 0:
                 raise ResourceError("Object exceeds resource limit; use read_object instead")
-            headers, stream = swift.connection().get_object(
-                container, object_name, resp_chunk_size=min(65536, byte_max + 1)
-            )
-            try:
-                data = stream.read(byte_max + 1)
-            finally:
-                stream.close()
-            if len(data) > byte_max:
-                raise ResourceError("Object exceeds resource limit; use read_object instead")
+            with swift.get_object(container, object_name) as response:
+                headers = response.headers
+                data = read_bounded_body(response, byte_max)
             # Without a Content-Length (chunked transfer) the HEAD size is the only
             # completeness check; a mismatch means a truncated or changed object.
             expected_size = int(headers.get("content-length", head_size))
@@ -408,6 +389,8 @@ def _register_storage_handlers(mcp: FastMCP, settings: Settings, swift: SwiftBac
                 except UnicodeDecodeError:
                     pass
             return ResourceResult(contents=[ResourceContent(content=data, mime_type=content_type)])
+        except SwiftBodyTooLarge:
+            raise ResourceError("Object exceeds resource limit; use read_object instead") from None
         except ResourceError:
             raise
         except Exception:
