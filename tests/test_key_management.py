@@ -30,6 +30,63 @@ class MemoryKeyring:
         return self.items.get(tuple(sorted(attributes.items())))
 
 
+def test_quickstart_initializes_then_reuses_its_key(tmp_path):
+    from swift_read_only_mcp.quickstart import caller_attributes, ensure_caller_key
+
+    keyring = MemoryKeyring()
+    first = ensure_caller_key(keyring, tmp_path)
+    value = keyring.get(caller_attributes(first))
+    assert value
+    assert ensure_caller_key(keyring, tmp_path) == first
+    assert keyring.get(caller_attributes(first)) == value
+
+
+def test_quickstart_adds_key_to_existing_database_without_replacing_it(tmp_path, capsys):
+    from swift_read_only_mcp.key_management import main
+    from swift_read_only_mcp.quickstart import caller_attributes, ensure_caller_key
+
+    keyring = MemoryKeyring()
+    assert main(["init", "other"], secrets=keyring, state_dir=tmp_path) == 0
+    original = json.loads(capsys.readouterr().out)["key_id"]
+    quickstart_id = ensure_caller_key(keyring, tmp_path)
+    assert quickstart_id != original
+    assert keyring.get(caller_attributes(quickstart_id))
+    assert keyring.get(
+        {"service": "swift-mcp", "purpose": "caller", "workshop": "other", "key-id": str(original)}
+    )
+
+
+def test_quickstart_refuses_multiple_active_keys_and_missing_caller_secret(tmp_path, capsys):
+    from swift_read_only_mcp.key_management import main
+    from swift_read_only_mcp.quickstart import WORKSHOP, caller_attributes, ensure_caller_key
+
+    keyring = MemoryKeyring()
+    key_id = ensure_caller_key(keyring, tmp_path)
+    assert main(["rotate", WORKSHOP, str(key_id)], secrets=keyring, state_dir=tmp_path) == 0
+    capsys.readouterr()
+    with pytest.raises(ValueError, match="Multiple active"):
+        ensure_caller_key(keyring, tmp_path)
+
+    # A missing secret is not treated as a reason to provision a new key.
+    state = tmp_path / "other-state"
+    state.mkdir(mode=0o700)
+    other_ring = MemoryKeyring()
+    other_id = ensure_caller_key(other_ring, state)
+    del other_ring.items[tuple(sorted(caller_attributes(other_id).items()))]
+    with pytest.raises(ValueError, match="unavailable"):
+        ensure_caller_key(other_ring, state)
+
+
+def test_quickstart_refuses_orphaned_pepper(tmp_path):
+    from swift_read_only_mcp.quickstart import ensure_caller_key
+
+    keyring = MemoryKeyring()
+    keyring.put({"service": "swift-mcp", "purpose": "pepper"}, "existing")
+    with pytest.raises(ValueError, match="inspect local state"):
+        ensure_caller_key(keyring, tmp_path)
+    assert not (tmp_path / "keys.db").exists()
+
+
 def list_tools(client, key):
     return client.post(
         "/mcp",

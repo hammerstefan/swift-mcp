@@ -4,7 +4,60 @@ Run Swift MCP on your Linux host and use Copilot CLI inside the included
 `swift-mcp-quickstart` workshop to check the metadata of one Swift container.
 You do not need Copilot CLI or a Copilot token on the host before you start.
 
-## Before you start
+## One-command quickstart
+
+From the repository root, run:
+
+```sh
+just quickstart
+```
+
+The wizard prompts for a protected OpenStack RC file path and a JSON container
+allowlist if `SWIFT_MCP_OPENRC` or `SWIFT_MCP_CONTAINERS` is unset or empty.
+Alternatively, supply both in your host environment before starting:
+
+```sh
+export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
+export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
+just quickstart
+```
+
+Use Linux, Bash 5.1 or later, Python 3.11 or later, `uv`, `just`, Workshop
+0.9.8 or later, and an unlocked default Secret Service keyring. Run as the
+unprivileged user who owns the keyring. Use a dedicated read-only Swift
+identity. Keep its RC file outside the checkout, owned by that user and not
+readable or writable by group or other users. Swift MCP reads the RC file as
+data, not as a shell script; see [RC file constraints](../README.md#openstack-rc-file).
+The wizard requires port `127.0.0.1:8000` and refuses to take over an existing
+`swift-mcp-quickstart` Workshop in this checkout.
+
+If the quickstart Copilot token is missing, the wizard opens the fine-grained
+token form and asks you to paste the token at a hidden prompt. It stores the
+token in your host keyring. It creates or reuses the separate MCP caller key
+and selects its ID automatically. An existing token is checked for presence,
+not validity or expiration; if Copilot rejects it, replace it in the keyring
+after inspecting the old entry. Neither credential belongs in the RC file,
+project files, shell history, or chat.
+
+The wizard installs Swift MCP in a temporary environment, starts the server on
+the host, and launches Copilot in a temporary container Workshop project. In
+Copilot, open `/mcp`, then request `get_container_stats` for an allowed test
+container. Check the actual tool result, not just the agent's summary.
+
+On exit, interruption, or failure, the wizard disconnects its interfaces,
+stops its server, and removes its Workshop and temporary project. **Files
+created in that project are discarded.** The stored token, caller key, pepper,
+and key database remain; shared `uv` and Workshop caches may also remain. A
+power loss or `SIGKILL` cannot run cleanup. Use `workshop list --global` to
+find a leftover project in a `swift-mcp-quickstart.*` temporary directory. If
+removal fails, the wizard prints that directory: inspect its
+`workshop -p <path>/project changes` and `tasks`, then remove that Workshop
+when safe. Once the Workshop is removed, remove that temporary directory. Do
+not remove unrelated Workshops or credentials.
+
+## Manual two-terminal alternative
+
+### Before you start
 
 - Have a checkout of this repository, Python 3.11 or later, and
   [uv](https://docs.astral.sh/uv/).

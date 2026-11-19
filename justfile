@@ -1,6 +1,10 @@
 default:
     @just --list
 
+# Start an interactive, temporary Swift MCP and Copilot session.
+quickstart:
+    @exec bash scripts/quickstart-wizard.sh
+
 # Start Swift MCP and launch and connect the quickstart Workshop.
 quickstart-serve:
     exec bash scripts/quickstart.sh
