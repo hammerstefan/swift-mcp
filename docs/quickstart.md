@@ -15,8 +15,8 @@ You do not need Copilot CLI or a Copilot token on the host before you start.
 - Use an unlocked default collection in your host user-session Secret Service
   keyring and install `secret-tool` (`libsecret-tools` on Ubuntu).
 - Have a GitHub account with access to Copilot CLI.
-- Have an OpenStack RC file for a [read-only Swift identity](../README.md#read-only-swift-deployment)
-  and the name of an existing test container.
+- Have an OpenStack RC file for the Swift identity and the name of your container.
+	- Using a [read-only Swift identity](../README.md#read-only-swift-deployment) is highly recommended.
 
 Run all shell commands from the repository root **on the host**. Workshop
 mounts only `quickstart/` at `/project`; keep your RC file outside the

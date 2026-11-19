@@ -18,8 +18,9 @@ You need:
 - An unlocked user-session Secret Service keyring and `secret-tool`. On Ubuntu,
   `secret-tool` is provided by the `libsecret-tools` package. Run the server as
   the unprivileged user who owns the keyring, not as root.
-- A test Swift account and either a Keystone v3 password or a pre-issued Swift
-  token and storage URL. Use a [dedicated read-only Swift identity](#read-only-swift-deployment).
+- A Swift account and either a Keystone v3 password or a pre-issued Swift token
+  and storage URL. Use of a
+  [dedicated read-only Swift identity](#read-only-swift-deployment) is recommended.
 - [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later and a container
   Workshop. Workshop VM tunnels are not supported.
 
