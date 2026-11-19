@@ -91,6 +91,36 @@ def test_validate_config_requires_protected_rc_and_valid_allowlist(monkeypatch, 
         quickstart.validate_config(tmp_path)
 
 
+def test_validate_config_expands_home_before_enforcing_rc_protection(monkeypatch, tmp_path):
+    home = tmp_path / "home with spaces"
+    root = home / "checkout"
+    root.mkdir(parents=True)
+    rc = home / "swift.rc"
+    rc.write_text("OS_AUTH_TOKEN='test-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n")
+    rc.chmod(0o600)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"HOME": str(home), "SWIFT_MCP_OPENRC": "~/swift.rc", "SWIFT_MCP_CONTAINERS": '["test"]'},
+    )
+    quickstart.validate_config(root)
+
+    rc.chmod(0o644)
+    with pytest.raises(ValueError, match="Protect"):
+        quickstart.validate_config(root)
+    rc.chmod(0o600)
+    with pytest.raises(ValueError, match="outside"):
+        quickstart.validate_config(home)
+
+    inside = root / "inside.rc"
+    inside.write_text(rc.read_text())
+    inside.chmod(0o600)
+    (home / "link.rc").symlink_to(inside)
+    monkeypatch.setitem(quickstart.os.environ, "SWIFT_MCP_OPENRC", "~/link.rc")
+    with pytest.raises(ValueError, match="outside"):
+        quickstart.validate_config(root)
+
+
 def test_validate_cli_explains_rc_restrictions_without_printing_secrets(
     monkeypatch, tmp_path, capsys
 ):

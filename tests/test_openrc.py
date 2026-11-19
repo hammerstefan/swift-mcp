@@ -56,6 +56,21 @@ def test_example_rc_loads_password_scope_region_interface_and_storage(tmp_path):
     }
 
 
+def test_openrc_path_supports_quoted_home_relative_path(monkeypatch, tmp_path):
+    home = tmp_path / "home with spaces"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    settings = settings_for(home, EXAMPLE_RC, SWIFT_MCP_OPENRC="~/credentials.rc")
+    assert settings.swift.user_name == "swift-user"
+    assert settings.swift.password == "fixture-$password"
+
+
+def test_openrc_path_does_not_expand_shell_variables(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(ValueError, match="Invalid Swift RC file"):
+        settings_for(tmp_path, EXAMPLE_RC, SWIFT_MCP_OPENRC="$HOME/credentials.rc")
+
+
 def test_references_and_escaping_in_double_quoted_values(tmp_path):
     settings = settings_for(
         tmp_path,

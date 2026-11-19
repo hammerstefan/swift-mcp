@@ -17,6 +17,7 @@ import secretstorage
 from swift_read_only_mcp.config import load_settings
 from swift_read_only_mcp.key_management import Keyring, SecretStore
 from swift_read_only_mcp.key_management import main as manage_keys
+from swift_read_only_mcp.openrc import expand_openrc_path
 
 WORKSHOP = "swift-mcp-quickstart"
 TOKEN_ATTRIBUTES = {"service": "copilot-cli", "username": WORKSHOP}
@@ -71,7 +72,7 @@ def copilot_token_status() -> int:
 def validate_config(root: Path) -> None:
     """Validate settings without opening a caller database or connecting to Swift."""
     try:
-        path = Path(os.environ["SWIFT_MCP_OPENRC"]).resolve(strict=True)
+        path = Path(expand_openrc_path(os.environ["SWIFT_MCP_OPENRC"])).resolve(strict=True)
         info = path.stat()
     except OSError:
         raise ValueError("Invalid Swift RC file") from None

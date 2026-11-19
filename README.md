@@ -76,6 +76,9 @@ export SWIFT_MCP_OPENRC=/path/to/credentials.rc
 uv run --locked swift-mcp-keys start swift-validation
 ```
 
+The path can also start with `~/`, which the server resolves against its own
+home directory. In shell commands, `"$HOME/credentials.rc"` is another option.
+
 The file is read once at startup and must be a UTF-8 regular file no larger than
 64 KiB. It can contain `export` or plain assignments for the Swift `OS_*`
 authentication and endpoint variables described below, `OS_TENANT_NAME`,

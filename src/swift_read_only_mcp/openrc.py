@@ -11,11 +11,17 @@ _VARIABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _OS_START = re.compile(r"\s*(?:export\s+)?(?:OS_[A-Za-z0-9_]+|ST_AUTH_VERSION)\b")
 
 
+def expand_openrc_path(path: str) -> str:
+    """Expand a current-user home prefix without interpreting other shell syntax."""
+
+    return os.path.expanduser(path) if path == "~" or path.startswith("~/") else path
+
+
 def load_openrc(path: str, allowed: Set[str]) -> dict[str, str]:
     """Load supported assignments from a bounded regular file; never run it as a script."""
 
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(expand_openrc_path(path), os.O_RDONLY | os.O_NONBLOCK)
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise ValueError("Invalid Swift RC file")
