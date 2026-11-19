@@ -175,3 +175,133 @@ def test_validate_cli_never_prints_unrecognized_exception_details(monkeypatch, c
     output = capsys.readouterr()
     assert "private-token" not in output.out + output.err
     assert "Quickstart check failed" in output.err
+
+
+@pytest.mark.parametrize(
+    ("failure", "description"),
+    [
+        ("Protect the RC file and keep it outside the checkout", "outside the checkout"),
+        ("Invalid Swift RC file", "missing, unreadable, or not a valid regular file"),
+        ("Invalid Swift RC assignment", "invalid or unsupported assignment"),
+        ("Invalid container allowlist", "JSON array of valid container names"),
+        ("Swift authentication is not configured", "complete supported credentials"),
+        ("Swift TLS verification must remain enabled", "TLS verification must remain enabled"),
+        ("Invalid Swift endpoint URL", "invalid or insecure endpoint URL"),
+        ("Invalid Swift TLS configuration", "TLS certificate configuration is invalid"),
+        ("Invalid Swift client certificate settings", "OS_KEY requires an OS_CERT"),
+        ("Invalid page limit", "SWIFT_MCP_PAGE_LIMIT must be a positive integer"),
+        ("Invalid object byte limit", "SWIFT_MCP_BYTE_LIMIT must be a positive integer"),
+        ("Invalid listing byte limit", "SWIFT_MCP_LISTING_BYTE_LIMIT must be a positive integer"),
+        ("Invalid caller rate limit", "SWIFT_MCP_RATE_LIMIT must be a positive integer"),
+    ],
+)
+def test_validate_cli_explains_each_known_configuration_failure(
+    monkeypatch, capsys, failure, description
+):
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", "/checkout"])
+
+    def fail(_root):
+        raise ValueError(failure)
+
+    monkeypatch.setattr(quickstart, "validate_config", fail)
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert description in output.err
+
+
+@pytest.mark.parametrize(
+    ("setting", "description"),
+    [
+        ("SWIFT_MCP_PAGE_LIMIT", "SWIFT_MCP_PAGE_LIMIT must be a positive integer"),
+        ("SWIFT_MCP_BYTE_LIMIT", "SWIFT_MCP_BYTE_LIMIT must be a positive integer"),
+        ("SWIFT_MCP_LISTING_BYTE_LIMIT", "SWIFT_MCP_LISTING_BYTE_LIMIT must be a positive integer"),
+        ("SWIFT_MCP_RATE_LIMIT", "SWIFT_MCP_RATE_LIMIT must be a positive integer"),
+    ],
+)
+def test_validate_cli_identifies_invalid_limit(monkeypatch, tmp_path, capsys, setting, description):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = tmp_path / "swift.rc"
+    rc.write_text(
+        "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n"
+    )
+    rc.chmod(0o600)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"SWIFT_MCP_OPENRC": str(rc), "SWIFT_MCP_CONTAINERS": '["test"]', setting: "0"},
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", str(root)])
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert description in output.err
+    assert "private-token" not in output.out + output.err
+
+
+def test_validate_cli_identifies_client_key_without_certificate(monkeypatch, tmp_path, capsys):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = tmp_path / "swift.rc"
+    rc.write_text(
+        "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n"
+        "OS_KEY='/private/client.key'\n"
+    )
+    rc.chmod(0o600)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"SWIFT_MCP_OPENRC": str(rc), "SWIFT_MCP_CONTAINERS": '["test"]'},
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", str(root)])
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert "OS_KEY requires an OS_CERT" in output.err
+    assert "private-token" not in output.out + output.err
+    assert "/private/client.key" not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    ("rc_content", "extra_env", "description"),
+    [
+        (
+            "OS_AUTH_TOKEN='private-token'\nOS_AUTH_TOKEN='duplicate'\n",
+            {},
+            "invalid or unsupported assignment",
+        ),
+        ("OS_AUTH_TOKEN='private-token'\n", {}, "complete supported credentials"),
+        (
+            "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='http://storage.example/v1/test'\n",
+            {},
+            "invalid or insecure endpoint URL",
+        ),
+        (
+            "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n"
+            "OS_CACERT='/missing/ca.pem'\n",
+            {},
+            "TLS certificate configuration is invalid",
+        ),
+        (
+            "OS_AUTH_TOKEN='private-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n",
+            {"SWIFTCLIENT_INSECURE": "true"},
+            "TLS verification must remain enabled",
+        ),
+    ],
+)
+def test_validate_cli_reports_actual_swift_configuration_failures(
+    monkeypatch, tmp_path, capsys, rc_content, extra_env, description
+):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    rc = tmp_path / "swift.rc"
+    rc.write_text(rc_content)
+    rc.chmod(0o600)
+    monkeypatch.setattr(
+        quickstart.os,
+        "environ",
+        {"SWIFT_MCP_OPENRC": str(rc), "SWIFT_MCP_CONTAINERS": '["test"]', **extra_env},
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "validate", str(root)])
+    assert quickstart.main() == 1
+    output = capsys.readouterr()
+    assert description in output.err
+    assert "private-token" not in output.out + output.err

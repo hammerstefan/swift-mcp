@@ -250,10 +250,16 @@ cleanup() {
   set +e
   stop_child "$copilot_pid"
   if (( token_attempted )); then
-    workshop_cmd disconnect "$client:github-token" || result=1
+    if ! workshop_cmd disconnect "$client:github-token"; then
+      printf '  Error: Could not disconnect the Copilot token; inspect Workshop cleanup.\n' >&2
+      result=1
+    fi
   fi
   if (( tunnel_attempted )); then
-    workshop_cmd disconnect "$client:swift-mcp" || result=1
+    if ! workshop_cmd disconnect "$client:swift-mcp"; then
+      printf '  Error: Could not disconnect the tunnel; inspect Workshop cleanup.\n' >&2
+      result=1
+    fi
   fi
   stop_child "$server_pid"
   if (( launch_attempted )); then
@@ -280,9 +286,9 @@ cleanup() {
   exit "$result"
 }
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'printf "  Error: Quickstart interrupted by SIGHUP; cleaning up.\n" >&2; exit 129' HUP
+trap 'printf "  Error: Quickstart interrupted by SIGINT; cleaning up.\n" >&2; exit 130' INT
+trap 'printf "  Error: Quickstart interrupted by SIGTERM; cleaning up.\n" >&2; exit 143' TERM
 
 run_wizard() {
   TOTAL_STAGES=8
@@ -319,19 +325,24 @@ run_wizard() {
   ) || fail 'Could not inspect the existing quickstart Workshop.'
   grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$existing" || fail 'An existing quickstart Workshop is present or its state is unknown; inspect it before retrying.'
   say 'This run uses a temporary Workshop project. Its container and project files will be removed on exit.'
-  confirm 'Continue with this temporary session?' || fail 'Cancelled.'
-  [[ -n ${SWIFT_MCP_OPENRC:-} ]] || ask SWIFT_MCP_OPENRC 'Path to your protected OpenStack RC file:'
-  [[ -n ${SWIFT_MCP_CONTAINERS:-} ]] || ask SWIFT_MCP_CONTAINERS 'Container allowlist as JSON, e.g. ["test-container"]:'
+  local session_response
+  printf '  %s? Continue with this temporary session? [Y/n] %s' "$YELLOW" "$RESET"
+  IFS= read -r session_response || fail 'Cancelled.'
+  [[ -z $session_response || $session_response =~ ^[Yy]([Ee][Ss])?$ ]] || fail 'Cancelled.'
+  [[ -n ${SWIFT_MCP_OPENRC:-} ]] || ask SWIFT_MCP_OPENRC 'Path to your protected OpenStack RC file:' || fail 'OpenStack RC file path was not provided.'
+  [[ -n ${SWIFT_MCP_CONTAINERS:-} ]] || ask SWIFT_MCP_CONTAINERS 'Container allowlist as JSON, e.g. ["test-container"]:' || fail 'Container allowlist was not provided.'
   [[ -n ${SWIFT_MCP_OPENRC:-} && -n ${SWIFT_MCP_CONTAINERS:-} ]] || fail 'Both Swift settings are required.'
   export SWIFT_MCP_OPENRC SWIFT_MCP_CONTAINERS
 
   stage "Install Swift MCP"
   RUN_DIR=$(mktemp -d -t swift-mcp-quickstart.XXXXXXXX) || fail 'Could not create a temporary session directory.'
-  RUN_DIR=$(cd -- "$RUN_DIR" && pwd -P)
+  local session_dir
+  session_dir=$(cd -- "$RUN_DIR" && pwd -P) || fail 'Could not access the temporary session directory.'
+  RUN_DIR=$session_dir
   export UV_PROJECT_ENVIRONMENT="$RUN_DIR/venv"
   (cd -- "$ROOT" && uv sync --locked --no-dev) || fail 'Swift MCP installation failed.'
   local python="$RUN_DIR/venv/bin/python"
-  "$python" -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Check the RC file and container allowlist.'
+  "$python" -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Swift MCP configuration validation failed; see the error above.'
 
   stage "Connect your Copilot credential"
   local token_status
@@ -344,7 +355,7 @@ run_wizard() {
     step 'Choose your personal account, seven-day expiration, and Public repositories.'
     step 'Under Permissions → Account, add Copilot Requests with Read access; add no other permissions.'
     step 'Generate the token, then paste it only at the hidden prompt below.'
-    ask_secret COPILOT_TOKEN 'Copilot token:'
+    ask_secret COPILOT_TOKEN 'Copilot token:' || fail 'Copilot token was not provided.'
     printf '%s' "$COPILOT_TOKEN" | "$python" -m swift_read_only_mcp.quickstart store-token || fail 'Could not store the Copilot token; inspect the keyring.'
     unset COPILOT_TOKEN
     "$python" -m swift_read_only_mcp.quickstart token-status || fail 'Could not verify the stored token; inspect the keyring.'
@@ -371,8 +382,8 @@ run_wizard() {
   (( attempt < 150 )) || fail 'Swift MCP did not become ready in time.'
 
   stage "Launch the temporary Workshop"
-  mkdir -- "$RUN_DIR/project"
-  cp -- "$ROOT/quickstart/workshop.yaml" "$ROOT/quickstart/mcp-config.json" "$RUN_DIR/project/"
+  mkdir -- "$RUN_DIR/project" || fail 'Could not prepare the temporary Workshop project.'
+  cp -- "$ROOT/quickstart/workshop.yaml" "$ROOT/quickstart/mcp-config.json" "$RUN_DIR/project/" || fail 'Could not prepare the temporary Workshop project.'
   say "Temporary session: $RUN_DIR"
   launch_attempted=1
   workshop_cmd launch || fail 'Workshop launch failed; inspect the reported change.'
@@ -400,6 +411,9 @@ run_wizard() {
     fail 'Swift MCP stopped while Copilot was running.'
   fi
   copilot_pid=
+  if (( status != 0 )); then
+    printf '  Error: Copilot exited unsuccessfully (status %s); inspect the output above.\n' "$status" >&2
+  fi
   return "$status"
 }
 

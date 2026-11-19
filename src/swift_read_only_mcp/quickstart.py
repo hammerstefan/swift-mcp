@@ -42,6 +42,11 @@ VALIDATION_MESSAGES = {
     "Swift TLS verification must remain enabled": "Swift TLS verification must remain enabled.",
     "Invalid Swift endpoint URL": "The Swift RC file contains an invalid or insecure endpoint URL.",
     "Invalid Swift TLS configuration": "The Swift TLS certificate configuration is invalid.",
+    "Invalid Swift client certificate settings": "OS_KEY requires an OS_CERT in the Swift RC file.",
+    "Invalid page limit": "SWIFT_MCP_PAGE_LIMIT must be a positive integer.",
+    "Invalid object byte limit": "SWIFT_MCP_BYTE_LIMIT must be a positive integer.",
+    "Invalid listing byte limit": "SWIFT_MCP_LISTING_BYTE_LIMIT must be a positive integer.",
+    "Invalid caller rate limit": "SWIFT_MCP_RATE_LIMIT must be a positive integer.",
 }
 
 
