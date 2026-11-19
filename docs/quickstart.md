@@ -1,36 +1,35 @@
 # Swift MCP and Workshop quickstart
 
 Run Swift MCP on your Linux host and use Copilot CLI inside the included
-`swift-validation` workshop to check the metadata of one Swift container.
+`swift-mcp-quickstart` workshop to check the metadata of one Swift container.
 You do not need Copilot CLI or a Copilot token on the host before you start.
-
-Copilot CLI connectivity to Swift MCP through this workshop has been verified.
-Use a controlled Swift service and test data for this walkthrough.
 
 ## Before you start
 
 - Have a checkout of this repository, Python 3.11 or later, and
   [uv](https://docs.astral.sh/uv/).
+- Install [`just`](https://just.systems/man/en/installation.html) on the host.
 - Have a working [Workshop](https://ubuntu.com/workshop/docs/) installation
   (0.9.8 or later). Use the included container workshop, not a VM; Workshop
   VMs do not support tunnels.
 - Use an unlocked default collection in your host user-session Secret Service
-  keyring and install `secret-tool` (`libsecret-tools` on Ubuntu). Run the
-  commands as the regular user who owns the keyring, not as root.
-- Have a GitHub account with access to Copilot CLI, an OpenStack RC file for a
-  read-only test Swift identity, and the name of an existing test container.
+  keyring and install `secret-tool` (`libsecret-tools` on Ubuntu).
+- Have a GitHub account with access to Copilot CLI.
+- Have an OpenStack RC file for a Swift identity and the name of an existing
+  test container.
 
 Run all shell commands from the repository root **on the host**. Workshop
-mounts only `validation/copilot` at `/project`; keep your RC file outside the
+mounts only `quickstart/` at `/project`; keep your RC file outside the
 entire checkout in a protected, owner-only location.
 
 ## 1. Create a Copilot token
 
-In your browser, [create a fine-grained personal access token](https://github.com/settings/personal-access-tokens/new).
-Select your personal account as **Resource owner**, choose **Public
-repositories** (this guide needs no private repository access), and set a short
-expiration. Under **Permissions → Account**, add **Copilot Requests**. Do not
-add repository permissions. See [GitHub's authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli#authenticating-with-environment-variables).
+Open the [prefilled fine-grained token form](https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read).
+Before generating the token, check that it expires in seven days, the
+**Resource owner** is your personal account, and **Repository access** is
+**Public repositories**. Under **Permissions → Account**, select
+**Copilot Requests** with **Read** access if it isn't already selected. Do not
+add other permissions. See [GitHub's authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli#authenticating-with-environment-variables).
 
 Store the token in the host keyring. Paste it only at the `secret-tool` prompt:
 
@@ -39,20 +38,19 @@ secret-tool store --label="Swift MCP quickstart Copilot" --collection=default \
   service copilot-cli username swift-mcp-quickstart
 ```
 
-In your local copy of [`validation/copilot/workshop.yaml`](../validation/copilot/workshop.yaml),
-under `system` → `slots` → `copilot-token` → `attributes`, replace the existing
-`username` value with `swift-mcp-quickstart`. Keep `service: copilot-cli`.
-These are lookup labels, not credentials. The lookup must match exactly one
-keyring item. Do not paste the token into YAML, a shell command, or Copilot chat.
+The [quickstart Workshop definition](../quickstart/workshop.yaml) already uses
+these lookup labels. You do not need to edit it. The lookup must match exactly
+one keyring item. Do not paste the token into YAML, a shell command, or Copilot
+chat.
 
-## 2. Start Swift MCP on the host
+## 2. Install Swift MCP and create a caller key
 
 In your first host terminal, install the server and create the Workshop's MCP
 caller key:
 
 ```sh
 uv sync --locked
-uv run --locked swift-mcp-keys init swift-validation
+uv run --locked swift-mcp-keys init swift-mcp-quickstart
 ```
 
 Note the numeric `key_id` in the output. The command stores the key itself in
@@ -64,55 +62,41 @@ overwriting anything.
 Swift MCP parses the RC file; it does not source it. The required values must
 be present as supported assignments. If the file needs to prompt for a
 password or run shell commands to set any of those values, follow the
-[host environment setup](../README.md#keystone-v3-password) instead.
+[host environment setup](../README.md#keystone-v3-password) in the first
+terminal and omit `SWIFT_MCP_OPENRC` below.
 
-Replace the example path with the absolute path to your RC file and
-`quickstart-test` with the name of your test container:
+## 3. Start the server and connect the Workshop
+
+In the first terminal, replace the example RC path and container name:
 
 ```sh
 export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'
 export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
-uv run --locked swift-mcp-keys start swift-validation
+just quickstart-serve
 ```
 
-Leave this terminal open. The server listens on host loopback at
-`http://127.0.0.1:8000/mcp`.
+`just quickstart-serve` starts Swift MCP on `127.0.0.1:8000`, launches or starts
+the Workshop if needed, and connects the tunnel and Copilot token. Leave this
+terminal open and continue when the recipe prompts you to run Copilot.
 
-## 3. Launch and connect the workshop
+If launch or a connection fails, run `workshop -p quickstart changes` and then
+`workshop -p quickstart tasks <change-id>` with the failed change's ID.
+If setup was interrupted or cleanup failed, check
+`workshop -p quickstart connections` and disconnect any remaining quickstart
+connections before retrying.
 
-In a second host terminal, from the repository root:
+## 4. Start copilot in workshop
+
+In a second host terminal, replace `42` with the `key_id` printed in step 2:
 
 ```sh
-workshop -p validation/copilot launch
-workshop -p validation/copilot info
+KEY_ID=42 just quickstart-copilot
 ```
 
-Check for `status: ready`. Then connect the Copilot token and the Swift MCP
-tunnel:
+The recipe retrieves the caller key from the host keyring without displaying it
+and passes it to Copilot for this run only.
 
-```sh
-workshop -p validation/copilot connect swift-validation/copilot:github-token :copilot-token
-workshop -p validation/copilot connect swift-validation/copilot:swift-mcp :swift-mcp
-workshop -p validation/copilot connections swift-validation
-```
-
-Check that both connections show `manual`. If launch or a connection fails,
-run `workshop -p validation/copilot changes` and then
-`workshop -p validation/copilot tasks <change-id>` with the failed change's ID.
-
-## 4. Verify one Swift tool call
-
-Still in the second host terminal, replace `42` with the `key_id` printed in
-step 2. This command retrieves the caller key without displaying it and passes
-it to the Copilot action for this session only:
-
-```sh
-set +x
-KEY_ID=42
-COPILOT_MCP_SWIFT_KEY="$(secret-tool lookup service swift-mcp purpose caller \
-  workshop swift-validation key-id "$KEY_ID")" \
-  workshop -p validation/copilot run --env COPILOT_MCP_SWIFT_KEY swift-validation -- copilot
-```
+## 5. Verify one Swift tool call
 
 In Copilot, open `/mcp` and check for `swift-mcp`. Then enter the following
 prompt with your test container name:
@@ -132,13 +116,12 @@ either secret while troubleshooting. See [more troubleshooting](../README.md#tro
 
 ## Stop and disconnect
 
-Exit Copilot and press `Ctrl+C` in the first terminal to stop Swift MCP. In the
-second terminal, disconnect the token and tunnel, then stop the workshop:
+Exit Copilot and press `Ctrl+C` in the first terminal. The recipe stops Swift
+MCP and disconnects the token and tunnel. In the second terminal, stop the
+Workshop:
 
 ```sh
-workshop -p validation/copilot disconnect swift-validation/copilot:github-token
-workshop -p validation/copilot disconnect swift-validation/copilot:swift-mcp
-workshop -p validation/copilot stop
+workshop -p quickstart stop
 ```
 
 ## Security notes
