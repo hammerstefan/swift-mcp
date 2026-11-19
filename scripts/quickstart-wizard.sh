@@ -387,21 +387,40 @@ run_wizard() {
   quickstart_python -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Swift MCP configuration validation failed; see the error above.'
 
   stage "Connect your Copilot credential"
-  local token_status
+  local token_status store_action
   if quickstart_python -m swift_read_only_mcp.quickstart token-status; then
-    say 'The quickstart Copilot token is already in the host keyring.'
+    say 'GitHub accepted the quickstart Copilot token from the host keyring.'
   else
     token_status=$?
-    (( token_status == 3 )) || fail 'Unlock the keyring and resolve any duplicate Copilot tokens before retrying.'
+    case $token_status in
+      3) store_action=store-token ;;
+      4)
+        warn 'The saved token is invalid or GitHub rejected it; it may be expired or revoked.'
+        confirm 'Open GitHub to create a replacement?' || fail 'Token replacement cancelled.'
+        store_action=replace-token
+        ;;
+      5) fail 'Could not check the Copilot token with GitHub; check network access and retry.' ;;
+      6) fail 'GitHub denied or rate-limited the token check; check permissions or retry later.' ;;
+      *) fail 'Unlock the keyring and resolve any duplicate Copilot tokens before retrying.' ;;
+    esac
     (exec {quickstart_lock}<&-; open_url 'https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read')
     step 'Choose your personal account, seven-day expiration, and Public repositories.'
     step 'Under Permissions → Account, add Copilot Requests with Read access; add no other permissions.'
     step 'Generate the token, then paste it only at the hidden prompt below.'
     ask_secret COPILOT_TOKEN 'Copilot token:' || fail 'Copilot token was not provided.'
-    printf '%s' "$COPILOT_TOKEN" | quickstart_python -m swift_read_only_mcp.quickstart store-token || fail 'Could not store the Copilot token; inspect the keyring.'
+    token_status=0
+    printf '%s' "$COPILOT_TOKEN" | quickstart_python -m swift_read_only_mcp.quickstart "$store_action" || token_status=$?
     unset COPILOT_TOKEN
-    quickstart_python -m swift_read_only_mcp.quickstart token-status || fail 'Could not verify the stored token; inspect the keyring.'
+    case $token_status in
+      0) ;;
+      4) fail 'The new Copilot token is invalid or GitHub rejected it; check it and retry.' ;;
+      5) fail 'Could not check the new Copilot token with GitHub; check network access and retry.' ;;
+      6) fail 'GitHub denied or rate-limited the token check; check permissions or retry later.' ;;
+      *) fail 'Could not store the Copilot token; inspect the keyring and retry.' ;;
+    esac
+    quickstart_python -m swift_read_only_mcp.quickstart token-status || fail 'Could not verify the stored token with GitHub; inspect the keyring and retry.'
   fi
+  note 'This check does not verify Copilot permission, subscription, or model access.'
 
   stage "Prepare the MCP caller key"
   local key_id

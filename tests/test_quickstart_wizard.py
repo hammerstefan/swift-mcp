@@ -74,9 +74,13 @@ elif name == "python":
     if (action == "token-status" and os.environ.get("TOKEN_MISSING")
             and not (state / "token").exists()):
         sys.exit(3)
-    if action == "store-token":
+    if action == "token-status" and not (state / "token").exists():
+        sys.exit(int(os.environ.get("TOKEN_CHECK_STATUS", "0")))
+    if action in ("store-token", "replace-token"):
         if not sys.stdin.read().startswith("github_pat_"):
             sys.exit(1)
+        if os.environ.get("CANDIDATE_STATUS"):
+            sys.exit(int(os.environ["CANDIDATE_STATUS"]))
         (state / "token").write_text("stored")
     if action == "ensure-key":
         print("invalid" if failure == "invalid-key-id" else "42")
@@ -549,6 +553,69 @@ def test_missing_token_opens_form_and_stores_it_in_keyring(fake_environment):
     assert browser["url"].startswith("https://github.com/settings/personal-access-tokens/new?")
     assert any(event["command"] == "helper-store-token" for event in logged)
     assert "github_pat_example" not in result.stdout + result.stderr
+
+
+def test_rejected_token_offers_browser_and_replaces_before_launch(fake_environment):
+    env, state, _ = fake_environment
+    env["TOKEN_CHECK_STATUS"] = "4"
+
+    result = run_wizard(env, "\ny\ny\ngithub_pat_replacement\n")
+
+    assert result.returncode == 0, result.stderr
+    commands = [event["command"] for event in events(state)]
+    assert (
+        commands.index("browser")
+        < commands.index("helper-replace-token")
+        < commands.index("server")
+    )
+    assert "github_pat_replacement" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("status", [5, 6])
+def test_token_check_failure_stops_without_browser_or_launch(fake_environment, status):
+    env, state, _ = fake_environment
+    env["TOKEN_CHECK_STATUS"] = str(status)
+
+    result = run_wizard(env)
+
+    assert result.returncode != 0
+    assert not {"browser", "server", "workshop-launch", "helper-replace-token"} & {
+        event["command"] for event in events(state)
+    }
+    assert "GitHub" in result.stderr
+
+
+def test_rejected_token_replacement_can_be_declined(fake_environment):
+    env, state, _ = fake_environment
+    env["TOKEN_CHECK_STATUS"] = "4"
+
+    result = run_wizard(env, "\ny\nn\n")
+
+    assert result.returncode != 0
+    assert not {"browser", "server", "helper-replace-token"} & {
+        event["command"] for event in events(state)
+    }
+
+
+@pytest.mark.parametrize("status", [4, 5, 6])
+@pytest.mark.parametrize("replacing", [False, True])
+def test_new_token_check_failure_never_launches_or_saves(fake_environment, status, replacing):
+    env, state, _ = fake_environment
+    env["CANDIDATE_STATUS"] = str(status)
+    if replacing:
+        env["TOKEN_CHECK_STATUS"] = "4"
+        input_text = "\ny\ny\ngithub_pat_replacement\n"
+    else:
+        env["TOKEN_MISSING"] = "1"
+        input_text = "\ny\ngithub_pat_replacement\n"
+
+    result = run_wizard(env, input_text)
+
+    assert result.returncode != 0
+    assert "GitHub" in result.stderr
+    assert "github_pat_replacement" not in result.stdout + result.stderr
+    assert not (state / "token").exists()
+    assert not {"server", "workshop-launch"} & {event["command"] for event in events(state)}
 
 
 def test_running_workshop_is_not_taken_over(fake_environment):

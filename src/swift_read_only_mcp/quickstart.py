@@ -12,6 +12,7 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
+import httpx
 import secretstorage
 
 from swift_read_only_mcp.config import load_settings
@@ -51,28 +52,86 @@ VALIDATION_MESSAGES = {
 }
 
 
-def copilot_token_status() -> int:
-    """Distinguish a missing token from an inaccessible or ambiguous keyring."""
-    with closing(secretstorage.dbus_init()) as connection:
-        collection = secretstorage.get_collection_by_alias(connection, "default")
-        if collection.is_locked():
-            raise ValueError("Secret collection is locked")
-        matches = list(
-            itertools.islice(secretstorage.search_items(connection, TOKEN_ATTRIBUTES), 2)
-        )
-        default = list(itertools.islice(collection.search_items(TOKEN_ATTRIBUTES), 2))
-        if not matches and not default:
-            return 3
-        if (
-            len(matches) != 1
-            or len(default) != 1
-            or matches[0].item_path != default[0].item_path
-            or default[0].is_locked()
-        ):
-            raise ValueError("Copilot token is ambiguous or inaccessible")
-        if not default[0].get_secret():
-            raise ValueError("Copilot token is empty")
+def verify_github_token(token: str) -> int:
+    """Check GitHub authentication, not Copilot permissions or model access."""
+    if not re.fullmatch(r"github_pat_[A-Za-z0-9_]{1,4085}", token):
+        return 4
+    try:
+        # Ignore proxy and CA overrides and do not follow redirects with credentials.
+        with httpx.Client(timeout=10.0, follow_redirects=False, trust_env=False) as client:
+            with client.stream(
+                "GET",
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+            ) as response:
+                status = response.status_code
+    except httpx.HTTPError:
+        return 5
+    if status == 200:
         return 0
+    if status == 401:
+        return 4
+    if status in (403, 429):
+        return 6
+    return 5
+
+
+def _copilot_item(connection):
+    """Find one unlocked token in the default collection, or fail closed."""
+    collection = secretstorage.get_collection_by_alias(connection, "default")
+    if collection.is_locked():
+        raise ValueError("Secret collection is locked")
+    matches = list(itertools.islice(secretstorage.search_items(connection, TOKEN_ATTRIBUTES), 2))
+    default = list(itertools.islice(collection.search_items(TOKEN_ATTRIBUTES), 2))
+    if not matches and not default:
+        return None
+    if (
+        len(matches) != 1
+        or len(default) != 1
+        or matches[0].item_path != default[0].item_path
+        or default[0].is_locked()
+    ):
+        raise ValueError("Copilot token is ambiguous or inaccessible")
+    if not default[0].get_secret():
+        raise ValueError("Copilot token is empty")
+    return default[0]
+
+
+def copilot_token_status() -> int:
+    """Check both the keyring item and GitHub's authentication response."""
+    with closing(secretstorage.dbus_init()) as connection:
+        item = _copilot_item(connection)
+        if item is None:
+            return 3
+        return verify_github_token(item.get_secret().decode("utf-8", errors="strict"))
+
+
+def save_copilot_token(token: str, *, replace: bool) -> int:
+    """Validate the candidate before creating or replacing the keyring item."""
+    status = verify_github_token(token)
+    if status:
+        return status
+    if not replace:
+        Keyring().put(TOKEN_ATTRIBUTES, token)
+        return 0
+    with closing(secretstorage.dbus_init()) as connection:
+        item = _copilot_item(connection)
+        if item is None:
+            raise ValueError("Copilot token disappeared")
+        old = item.get_secret()
+        status = verify_github_token(old.decode("utf-8", errors="strict"))
+        if status != 4:
+            return status or 1
+        current = _copilot_item(connection)
+        if current is None or current.item_path != item.item_path or current.get_secret() != old:
+            raise ValueError("Copilot token changed during replacement")
+        current.set_secret(token.encode("utf-8"))
+        if current.get_secret() != token.encode("utf-8"):
+            raise ValueError("Copilot token could not be verified")
+    return 0
 
 
 def validate_config(root: Path) -> None:
@@ -154,6 +213,7 @@ def main() -> int:
             "normalize-containers",
             "token-status",
             "store-token",
+            "replace-token",
             "ensure-key",
             "caller-key",
         ),
@@ -174,15 +234,9 @@ def main() -> int:
             validate_config(Path(args.value))
         elif args.action == "token-status":
             return copilot_token_status()
-        elif args.action == "store-token":
+        elif args.action in ("store-token", "replace-token"):
             token = sys.stdin.read(4097)
-            if (
-                not token.startswith("github_pat_")
-                or not len("github_pat_") < len(token) <= 4096
-                or any(char.isspace() or ord(char) < 32 for char in token)
-            ):
-                raise ValueError("Invalid Copilot token")
-            Keyring().put(TOKEN_ATTRIBUTES, token)
+            return save_copilot_token(token, replace=args.action == "replace-token")
         elif args.action == "ensure-key":
             print(ensure_caller_key(Keyring(), Path.home() / ".local/state/swift-mcp"))
         else:

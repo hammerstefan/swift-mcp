@@ -20,6 +20,9 @@ class Item:
     def get_secret(self):
         return self.value
 
+    def set_secret(self, value):
+        self.value = value
+
 
 class Collection:
     def __init__(self, items, locked=False):
@@ -55,11 +58,177 @@ def test_token_lookup_requires_one_unlocked_default_collection_item(
         lambda *_: Collection(default_items, locked),
     )
     monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter(all_items))
+    monkeypatch.setattr(quickstart, "verify_github_token", lambda _token: 0)
     if expected is None:
         with pytest.raises(ValueError):
             quickstart.copilot_token_status()
     else:
         assert quickstart.copilot_token_status() == expected
+
+
+@pytest.mark.parametrize(
+    ("http_status", "expected"), [(200, 0), (401, 4), (403, 6), (429, 6), (500, 5), (302, 5)]
+)
+def test_github_token_check_classifies_responses_without_following_redirects(
+    monkeypatch, http_status, expected
+):
+    import httpx
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(http_status, headers={"Location": "https://example.org/"})
+
+    real_client = httpx.Client
+
+    def client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["trust_env"] is False
+        assert kwargs["timeout"] == 10.0
+        return real_client(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(quickstart.httpx, "Client", client)
+    assert quickstart.verify_github_token("github_pat_fixture") == expected
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.github.com/user"
+    assert requests[0].headers["authorization"] == "Bearer github_pat_fixture"
+
+
+def test_github_token_check_handles_transport_failure_without_disclosing_token(monkeypatch, capsys):
+    import httpx
+
+    def client(**_kwargs):
+        raise httpx.ConnectError("github_pat_fixture")
+
+    monkeypatch.setattr(quickstart.httpx, "Client", client)
+    assert quickstart.verify_github_token("github_pat_fixture") == 5
+    captured = capsys.readouterr()
+    assert "github_pat_fixture" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("token", ["", "github_pat_", "github_pat_bad\nvalue", "ghp_classic"])
+def test_invalid_token_format_is_rejected_without_a_network_request(monkeypatch, token):
+    def client(**_kwargs):
+        pytest.fail("Invalid token must not be sent over the network")
+
+    monkeypatch.setattr(quickstart.httpx, "Client", client)
+    assert quickstart.verify_github_token(token) == 4
+
+
+@pytest.mark.parametrize("candidate_status", [4, 5, 6])
+def test_replacement_does_not_change_old_token_when_new_token_check_fails(
+    monkeypatch, candidate_status
+):
+    item = Item(b"github_pat_old")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([item])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([item]))
+    monkeypatch.setattr(quickstart, "verify_github_token", lambda _token: candidate_status)
+
+    assert quickstart.save_copilot_token("github_pat_new", replace=True) == candidate_status
+    assert item.value == b"github_pat_old"
+
+
+@pytest.mark.parametrize("old_status", [0, 5, 6])
+def test_replacement_refuses_to_overwrite_token_unless_old_token_is_rejected(
+    monkeypatch, old_status
+):
+    item = Item(b"github_pat_old")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([item])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([item]))
+    monkeypatch.setattr(
+        quickstart, "verify_github_token", lambda token: 0 if token.endswith("new") else old_status
+    )
+
+    assert quickstart.save_copilot_token("github_pat_new", replace=True) != 0
+    assert item.value == b"github_pat_old"
+
+
+def test_replacement_updates_only_single_rejected_quickstart_item(monkeypatch):
+    item = Item(b"github_pat_old")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([item])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([item]))
+    monkeypatch.setattr(
+        quickstart, "verify_github_token", lambda token: 0 if token.endswith("new") else 4
+    )
+
+    assert quickstart.save_copilot_token("github_pat_new", replace=True) == 0
+    assert item.value == b"github_pat_new"
+
+
+def test_replacement_stops_if_token_changes_while_checking(monkeypatch):
+    item = Item(b"github_pat_old")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([item])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([item]))
+
+    def verify(token):
+        if token.endswith("old"):
+            item.value = b"github_pat_other"
+            return 4
+        return 0
+
+    monkeypatch.setattr(quickstart, "verify_github_token", verify)
+    with pytest.raises(ValueError, match="changed"):
+        quickstart.save_copilot_token("github_pat_new", replace=True)
+    assert item.value == b"github_pat_other"
+
+
+def test_replacement_refuses_ambiguous_keyring_items(monkeypatch):
+    old, other = Item(b"github_pat_old"), Item(b"github_pat_other")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([old])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([old, other]))
+    monkeypatch.setattr(quickstart, "verify_github_token", lambda _token: 0)
+    with pytest.raises(ValueError, match="ambiguous"):
+        quickstart.save_copilot_token("github_pat_new", replace=True)
+    assert old.value == b"github_pat_old"
+    assert other.value == b"github_pat_other"
+
+
+def test_token_cli_checks_rejected_saved_token_and_replaces_it(monkeypatch, capsys):
+    import httpx
+
+    item = Item(b"github_pat_old")
+    monkeypatch.setattr(quickstart.secretstorage, "dbus_init", lambda: io.BytesIO())
+    monkeypatch.setattr(
+        quickstart.secretstorage, "get_collection_by_alias", lambda *_: Collection([item])
+    )
+    monkeypatch.setattr(quickstart.secretstorage, "search_items", lambda *_: iter([item]))
+    real_client = httpx.Client
+
+    def respond(request):
+        status = 200 if request.headers["authorization"].endswith("new") else 401
+        return httpx.Response(status)
+
+    monkeypatch.setattr(
+        quickstart.httpx,
+        "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    monkeypatch.setattr(sys, "argv", ["quickstart", "token-status"])
+    assert quickstart.main() == 4
+    monkeypatch.setattr(sys, "argv", ["quickstart", "replace-token"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("github_pat_new"))
+    assert quickstart.main() == 0
+    assert item.value == b"github_pat_new"
+    monkeypatch.setattr(sys, "argv", ["quickstart", "token-status"])
+    assert quickstart.main() == 0
+    output = capsys.readouterr()
+    assert "github_pat_" not in output.out + output.err
 
 
 def test_validate_config_requires_protected_rc_and_valid_allowlist(monkeypatch, tmp_path):

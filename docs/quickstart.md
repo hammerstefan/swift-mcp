@@ -54,7 +54,9 @@ start the server and Copilot separately with the project in `quickstart/`.
   Run the quickstart commands from the repository root in a terminal in the
   same desktop session, as the user who owns the keyring. Do not use `sudo`
   to run the quickstart.
-- **Copilot:** Use a GitHub account with access to Copilot CLI.
+- **Copilot:** Use a GitHub account with access to Copilot CLI. The wizard
+  requires direct HTTPS access to `api.github.com` to check the token; it does
+  not use proxy or custom CA environment settings for this check.
 - **Swift:** Choose a container whose name and metadata you can share
   with Copilot's model provider. Prefer a [read-only Swift identity](../README.md#read-only-swift-deployment).
   For the wizard, you need an [OpenStack RC file](../README.md#openstack-rc-file)
@@ -87,9 +89,13 @@ just quickstart
    export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
    ```
 
-2. If the quickstart Copilot token is missing, the wizard opens the GitHub
-   token form. Follow the on-screen instructions and paste the token only at
-   the hidden prompt. The wizard stores it in your host keyring.
+2. The wizard checks the quickstart Copilot token with GitHub. If it is missing,
+   the wizard opens the GitHub token form. If GitHub rejects the saved token,
+   the wizard offers to open the form to create a replacement. Follow the
+   on-screen instructions and paste the token only at the hidden prompt. The
+   wizard checks the new token before storing it in your host keyring.
+   A GitHub authentication check does not verify Copilot permission, your
+   subscription, or model availability.
 3. The wizard creates or reuses the Workshop's MCP caller key, starts Swift
    MCP on the host, and opens Copilot in the Workshop. You don't need to
    enter a key ID. Once Copilot opens, verify the connection below.
@@ -213,6 +219,10 @@ for this run only. [Verify one Swift tool call](#verify-one-swift-tool-call).
   wizard, run `workshop -p "<printed project path>" connections`, replacing
   the placeholder with the path from `Workshop project:`. Check the token's
   keyring labels, expiration, and **Copilot Requests** permission.
+- **Wizard cannot check the Copilot token:** Check direct HTTPS connectivity to
+  `api.github.com`. If GitHub reports a permission or rate-limit problem,
+  check the token permissions or retry later. The wizard does not replace a
+  saved token when the check is inconclusive.
 - **Swift MCP returns HTTP 401:** Check the MCP caller key ID. In the
   two-terminal setup, `KEY_ID` must match the ID printed in terminal 1.
 
