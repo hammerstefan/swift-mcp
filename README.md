@@ -398,3 +398,8 @@ stores examples locally in `.hypothesis/`. To reproduce a run with a known seed,
 add `--hypothesis-seed=<seed>` to the pytest command. Add a regression test or
 an explicit example for any important failure; the local example database is
 not shared with CI.
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 only
+(SPDX: `GPL-3.0-only`). See [LICENSE](LICENSE) for the full license text.
