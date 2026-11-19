@@ -1,0 +1,24 @@
+name: swift-validation
+base: ubuntu@24.04
+sdks:
+  - name: system
+    slots:
+      copilot-token:
+        interface: secret
+        attributes:
+          service: copilot-cli
+          username: https://github.com:hammerstefan
+      swift-mcp:
+        interface: tunnel
+        endpoint: 127.0.0.1:8000
+  - name: copilot
+    channel: latest/stable
+    plugs:
+      swift-mcp:
+        interface: tunnel
+        endpoint: 127.0.0.1:8000
+
+actions:
+  copilot: |
+    : "${COPILOT_MCP_SWIFT_KEY:?Supply the Swift MCP caller key through the environment}"
+    exec copilot --additional-mcp-config @/project/mcp-config.json "$@"

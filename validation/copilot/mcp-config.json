@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "swift-mcp": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "X-API-Key": "${COPILOT_MCP_SWIFT_KEY}"
+      },
+      "tools": [
+        "get_account_stats",
+        "list_containers",
+        "get_container_stats",
+        "list_objects",
+        "get_object_stats",
+        "read_object"
+      ]
+    }
+  }
+}

@@ -1,0 +1,79 @@
+name: Python CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.26"
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked --dev
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked ty check src tests
+      - run: uv run --locked pytest -q
+
+  conformance:
+    # Selected upstream MCP conformance scenarios against the credential-free loopback
+    # fixture only. No secrets are available to this job; see docs/conformance.md.
+    runs-on: ubuntu-latest
+    env:
+      RUNNER_COMMIT: 96a6f9478b7f2e125cf0360a213383cf57533893
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: modelcontextprotocol/conformance
+          ref: ${{ env.RUNNER_COMMIT }}
+          path: conformance-runner
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "22.23.5"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.26"
+          python-version: "3.14"
+      - run: uv sync --locked --dev
+      - name: Build pinned runner
+        working-directory: conformance-runner
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Start loopback fixture
+        run: |
+          uv run --locked python tests/conformance/fixture.py > fixture.log 2>&1 &
+          for _ in $(seq 1 50); do
+            if (exec 3<>/dev/tcp/127.0.0.1/8765) 2>/dev/null; then exit 0; fi
+            sleep 0.2
+          done
+          cat fixture.log
+          exit 1
+      - name: Run selected scenarios
+        working-directory: conformance-runner
+        run: |
+          run() {
+            node dist/index.js server --url http://127.0.0.1:8765/mcp \
+              --scenario "$2" --spec-version "$1"
+          }
+          for scenario in server-initialize ping tools-list tools-call-simple-text \
+            resources-templates-read dns-rebinding-protection; do
+            run 2025-11-25 "$scenario"
+          done
+          for scenario in tools-list tools-call-simple-text resources-templates-read \
+            dns-rebinding-protection server-stateless; do
+            run 2026-07-28 "$scenario"
+          done

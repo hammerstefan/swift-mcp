@@ -1,6 +1,6 @@
 # Swift read-only MCP server — planning contract
 
-Status: planning only; no implementation or live conformance result exists. The repository was empty when this plan was recorded.
+Status: implementation in progress; see `docs/conformance.md` for selected fixture results. This document records the original planning contract, not release approval.
 
 ## Goal and boundaries
 
@@ -12,7 +12,7 @@ The supported MCP revisions are **2025-11-25 and 2026-07-28**. FastMCP v4 serves
 
 - One operator-provided Swift identity supplies the view for all authenticated MCP callers; no caller impersonation or per-user Swift credentials. Swift permissions remain authoritative. Optional exact-name container allowlist: **unset = all readable containers**, **explicitly empty = deny all**, **nonempty = named containers only**. Enforce it on every list, stat, tool read, and resource read.
 - Tools: account statistics, paged container list, container statistics, paged object list, object statistics, and bounded object read with explicit byte offset and length. Use only `Connection.head_account`, `get_account`, `head_container`, `get_container`, `head_object`, and `get_object` or equivalently restricted GET/HEAD operations; never expose arbitrary Swift headers, query strings, URLs, or general-purpose request methods as tool parameters.
-- Listings return at most one page with a continuation marker; support Swift-native prefix and delimiter where applicable. Do not fetch full listings or perform cross-container scans. Default page maximum: **1,000 entries**.
+- Listings return at most one page with a continuation marker; support Swift-native prefix and delimiter where applicable. While a container allowlist is configured, the container list is paged from the allowlist itself, not from the account, so neither entries nor markers can expose an excluded container (ADR 0002). Stream and bound listing JSON responses (default **4 MiB**, configurable) because swiftclient's list methods buffer the complete response body. Do not fetch full listings or perform cross-container scans. Default page maximum: **1,000 entries**.
 - Object reads default to **1 MiB maximum per call**. Operator may configure any positive finite read/page limit; there is deliberately **no non-overridable ceiling**. Apply finite timeouts, bounded concurrency and request-rate controls, enforce the configured limit on bytes actually read even if Swift ignores a Range request or an object changes after HEAD, and close partial streams safely. An oversized request is an error, not an unbounded download.
 - Return strict UTF-8 for recognized textual content; return lossless base64 with content type, size, offset and partial-result indication for binary or invalid text. Validate and encode names and URIs; never interpret Swift names as local filesystem paths. Return only reviewed, non-sensitive metadata fields (for example byte count, content type, timestamp and ETag); never return raw account/container/object headers or TempURL/signing keys.
 - Expose read-only object **resource templates**, not an enumerated account-wide `resources/list`. A resource read returns the whole object only if within the configured maximum; otherwise it errors and points to the ranged read tool. Apply the same authentication, allowlist, byte limit and metadata policy as tools.

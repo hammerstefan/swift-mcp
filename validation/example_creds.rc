@@ -1,0 +1,28 @@
+
+########## Example credentials: replace placeholders before use #########
+NOVARC_CONFIG_VERSION=1
+NOVARC=$(readlink -f "${BASH_SOURCE:-${0}}" 2>/dev/null) ||
+    NOVARC=$(python -c 'import os,sys; print os.path.abspath(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE:-${0}}")
+NOVA_KEY_DIR=${NOVARC%/*}
+export OS_USERNAME="example-user"
+export OS_TENANT_NAME="example-project"
+export OS_PASSWORD="REPLACE_WITH_PASSWORD"
+export OS_AUTH_URL="https://identity.example.invalid:5000/v3"
+export OS_REGION_NAME="example-region"
+
+export NOVA_USERNAME="${OS_USERNAME}"
+export NOVA_PASSWORD="${OS_PASSWORD}"
+export NOVA_PROJECT_ID="${OS_TENANT_NAME}"
+export NOVA_VERSION="1.1"
+export NOVA_REGION="${OS_REGION_NAME}"
+
+# for keystone v3
+export OS_PROJECT_NAME=${OS_TENANT_NAME}
+export OS_PROJECT_DOMAIN_NAME=Default
+export OS_USER_DOMAIN_NAME=Default
+export OS_IDENTITY_API_VERSION=3
+
+export OS_INTERFACE=public
+
+# Set the storage URL for the example project.
+export OS_STORAGE_URL=https://storage.example.invalid/swift/v1/AUTH_EXAMPLE
