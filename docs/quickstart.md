@@ -14,12 +14,7 @@ just quickstart
 
 The wizard prompts for a protected OpenStack RC file path and a container
 allowlist if `SWIFT_MCP_OPENRC` or `SWIFT_MCP_CONTAINERS` is unset or empty.
-Enter one name (`test-container`), comma-separated names such as
-`foo-container, bar-container`, or a JSON array (`["foo", "bar"]`). Spaces
-around comma-separated names are ignored. Use a JSON array for names containing
-commas, starting with `[`, or having leading or trailing spaces. The wizard also
-accepts these forms in `SWIFT_MCP_CONTAINERS`; the server and manual setup still
-require a JSON array.
+
 Alternatively, supply both settings in your host environment before starting:
 
 ```sh
@@ -28,27 +23,27 @@ export SWIFT_MCP_CONTAINERS='["quickstart-test"]'
 just quickstart
 ```
 
-Use Linux, Bash 5.1 or later, Python 3.11 or later, `uv`, `just`, Workshop
-0.9.8 or later, and an unlocked default Secret Service keyring. Run as the
-unprivileged user who owns the keyring. Use a dedicated read-only Swift
-identity. Keep its RC file outside the checkout, owned by that user and not
-readable or writable by group or other users. Swift MCP reads the RC file as
-data, not as a shell script; see [RC file constraints](../README.md#openstack-rc-file).
+This requires: Linux, Bash 5.1 or later, Python 3.11 or later, `uv`, `just`, Workshop
+0.9.8 or later, and an unlocked default Secret Service keyring. 
+Run as the unprivileged user who owns the keyring. 
+Keep its RC file outside the checkout, owned by that user and not
+readable or writable by group or other users.  See [RC file constraints](../README.md#openstack-rc-file).
+
 The wizard requires port `127.0.0.1:8000` and refuses to take over an existing
 `swift-mcp-quickstart` Workshop in this checkout.
 
 If the quickstart Copilot token is missing, the wizard opens the fine-grained
 token form and asks you to paste the token at a hidden prompt. It stores the
-token in your host keyring. It creates or reuses the separate MCP caller key
-and selects its ID automatically. An existing token is checked for presence,
-not validity or expiration; if Copilot rejects it, replace it in the keyring
-after inspecting the old entry. Neither credential belongs in the RC file,
-project files, shell history, or chat.
+token in your host keyring.
+
+It creates or reuses a dedicated  MCP caller key and selects its ID automatically.  
 
 The wizard installs Swift MCP in a temporary environment, starts the server on
-the host, and launches Copilot in a temporary container Workshop project. In
-Copilot, open `/mcp`, then request `get_container_stats` for an allowed test
-container. Check the actual tool result, not just the agent's summary.
+the host, and launches Copilot in a temporary container Workshop project. 
+
+To test functionality, in Copilot, open `/mcp`, then request `get_container_stats` 
+for an allowed test container. Check the actual tool result, not just the agent's
+summary.
 
 On exit, interruption, or failure, the wizard disconnects its interfaces,
 stops its server, and removes its Workshop and temporary project. **Files
