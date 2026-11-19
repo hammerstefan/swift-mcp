@@ -202,6 +202,7 @@ set +x
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 RUN_DIR=
+PROJECT_DIR=
 server_pid=
 copilot_pid=
 launch_attempted=0
@@ -218,7 +219,7 @@ fail() {
 workshop_cmd() (
   unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
   unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
-  exec workshop -p "$RUN_DIR/project" "$@"
+  exec workshop -p "$PROJECT_DIR" "$@"
 )
 
 # The asynchronous function must exec the CLI directly so its PID can be
@@ -227,7 +228,7 @@ run_copilot() {
   unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
   unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
   export COPILOT_MCP_SWIFT_KEY="$caller_key"
-  exec workshop -p "$RUN_DIR/project" run --env COPILOT_MCP_SWIFT_KEY -- copilot
+  exec workshop -p "$PROJECT_DIR" run --env COPILOT_MCP_SWIFT_KEY -- copilot
 }
 
 stop_child() {
@@ -245,7 +246,7 @@ stop_child() {
 }
 
 cleanup() {
-  local result=$? listing preserve=0
+  local result=$? listing stop_failed=0
   trap '' HUP INT TERM
   set +e
   stop_child "$copilot_pid"
@@ -263,18 +264,21 @@ cleanup() {
   fi
   stop_child "$server_pid"
   if (( launch_attempted )); then
-    # A failed or interrupted launch can leave a workshop behind. The project
-    # is private to this run, so only this run's workshop can be removed here.
-    listing=$(workshop_cmd list --no-headers) || preserve=1
-    if (( ! preserve )) && ! grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$listing"; then
-      workshop_cmd remove || preserve=1
+    # Never remove the Workshop: user files can exist anywhere in its container
+    # or its project, including after an interrupted or failed run.
+    listing=$(workshop_cmd list --no-headers) || stop_failed=1
+    if (( ! stop_failed )) && ! grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$listing"; then
+      workshop_cmd stop || stop_failed=1
     fi
-    if (( preserve )); then
-      printf '  Cleanup incomplete. Inspect workshop -p %s/project changes and tasks; remove the session when safe.\n' "$RUN_DIR" >&2
+    if (( stop_failed )); then
+      printf '  Cleanup incomplete. Inspect workshop -p %s changes and tasks; the Workshop and its files were kept.\n' "$PROJECT_DIR" >&2
       result=1
     fi
   fi
-  if [[ -n "$RUN_DIR" ]] && (( ! preserve )); then
+  if [[ -n "$PROJECT_DIR" ]]; then
+    printf '  Workshop project and files kept at: %s\n' "$PROJECT_DIR"
+  fi
+  if [[ -n "$RUN_DIR" ]]; then
     if ! rm -rf -- "$RUN_DIR"; then
       printf '  Could not remove temporary session: %s\n' "$RUN_DIR" >&2
       result=1
@@ -324,7 +328,7 @@ run_wizard() {
     workshop -p "$ROOT/quickstart" list --no-headers
   ) || fail 'Could not inspect the existing quickstart Workshop.'
   grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$existing" || fail 'An existing quickstart Workshop is present or its state is unknown; inspect it before retrying.'
-  say 'This run uses a temporary Workshop project. Its container and project files will be removed on exit.'
+  say 'The server is temporary. The Workshop and its project files will be kept on exit.'
   local session_response
   printf '  %s? Continue with this temporary session? [Y/n] %s' "$YELLOW" "$RESET"
   IFS= read -r session_response || fail 'Cancelled.'
@@ -383,10 +387,12 @@ run_wizard() {
   done
   (( attempt < 150 )) || fail 'Swift MCP did not become ready in time.'
 
-  stage "Launch the temporary Workshop"
-  mkdir -- "$RUN_DIR/project" || fail 'Could not prepare the temporary Workshop project.'
-  cp -- "$ROOT/quickstart/workshop.yaml" "$ROOT/quickstart/mcp-config.json" "$RUN_DIR/project/" || fail 'Could not prepare the temporary Workshop project.'
-  say "Temporary session: $RUN_DIR"
+  stage "Launch the Workshop"
+  [[ ${HOME:-} == /* && -d $HOME ]] || fail 'An absolute home directory is required to keep Workshop files.'
+  (umask 077; mkdir -p -- "$HOME/.local/share/swift-mcp/quickstarts") || fail 'Could not prepare the Workshop project directory.'
+  PROJECT_DIR=$(umask 077; mktemp -d -- "$HOME/.local/share/swift-mcp/quickstarts/session.XXXXXXXX") || fail 'Could not prepare the Workshop project directory.'
+  cp -- "$ROOT/quickstart/workshop.yaml" "$ROOT/quickstart/mcp-config.json" "$PROJECT_DIR/" || fail 'Could not prepare the Workshop project.'
+  say "Workshop project: $PROJECT_DIR"
   launch_attempted=1
   workshop_cmd launch || fail 'Workshop launch failed; inspect the reported change.'
   kill -0 "$server_pid" 2>/dev/null || fail 'Swift MCP stopped during Workshop launch.'

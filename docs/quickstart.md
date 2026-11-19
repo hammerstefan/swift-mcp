@@ -190,7 +190,9 @@ workshop -p "$project" shell
 ```
 
 Each saved Workshop consumes storage. `workshop remove` deletes its container
-files, so back up anything you need before choosing to remove it.
+files, so back up anything you need before choosing to remove it. Saved files
+can include sensitive data; do not write credentials into the Workshop or its
+project.
 
 ### Recover an interrupted wizard run
 

@@ -18,6 +18,7 @@ FAKE_COMMAND = r"""#!/usr/bin/python3
 import json
 import os
 import signal
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -121,15 +122,25 @@ elif name == "workshop":
             "tunnel-disconnect" if args[3].endswith(":swift-mcp") else "token-disconnect"):
         sys.exit(1)
     elif command == "run":
+        if os.environ.get("CREATE_USER_FILES"):
+            (project / "user-report.txt").write_text("project work")
+            container = state / "container-files"
+            container.mkdir()
+            (container / "user-notes.txt").write_text("container work")
         if failure == "copilot":
             sys.exit(7)
         if not os.environ.get("COPILOT_MCP_SWIFT_KEY"):
             sys.exit(2)
         if os.environ.get("SERVER_EXITS") or os.environ.get("RUN_WAIT"):
             time.sleep(10)
+    elif command == "stop":
+        if os.environ.get("STOP_FAIL"):
+            sys.exit(1)
+        (project / "stopped").write_text("yes")
     elif command == "remove":
         if os.environ.get("REMOVE_FAIL"):
             sys.exit(1)
+        shutil.rmtree(state / "container-files", ignore_errors=True)
         (project / "launched").unlink(missing_ok=True)
 elif name == "xdg-open":
     event("browser", url=args[0])
@@ -214,14 +225,56 @@ def events(state):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def test_one_shot_cleans_only_its_temporary_session(fake_environment):
+@pytest.mark.parametrize("failure", ["", "copilot", "server-exits"])
+def test_user_files_survive_teardown_in_project_and_container(fake_environment, failure):
+    env, state, temporary = fake_environment
+    env["CREATE_USER_FILES"] = "1"
+    if failure == "copilot":
+        env["FAIL_STAGE"] = "copilot"
+    elif failure == "server-exits":
+        env["SERVER_EXITS"] = "1"
+
+    result = run_wizard(env)
+
+    assert (result.returncode == 0) == (failure == ""), result.stderr
+    logged = events(state)
+    project = Path(next(event["project"] for event in logged if event["command"] == "workshop-run"))
+    assert (project / "user-report.txt").read_text() == "project work"
+    assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+    assert not project.is_relative_to(temporary)
+    assert "workshop-remove" not in [event["command"] for event in logged]
+    assert "workshop-stop" in [event["command"] for event in logged]
+    assert str(project) in result.stdout
+    assert project.stat().st_mode & 0o777 == 0o700
+
+
+def test_new_run_does_not_replace_a_previous_workshop(fake_environment):
+    env, state, _ = fake_environment
+    env["CREATE_USER_FILES"] = "1"
+    first = run_wizard(env)
+    assert first.returncode == 0, first.stderr
+    first_project = Path(
+        next(event["project"] for event in events(state) if event["command"] == "workshop-run")
+    )
+
+    del env["CREATE_USER_FILES"]
+    second = run_wizard(env)
+    assert second.returncode == 0, second.stderr
+    projects = [event["project"] for event in events(state) if event["command"] == "workshop-run"]
+    assert len(set(projects)) == 2
+    assert (first_project / "user-report.txt").read_text() == "project work"
+    assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+
+
+def test_one_shot_stops_workshop_and_cleans_temporary_environment(fake_environment):
     env, state, temporary = fake_environment
     result = run_wizard(env)
     assert result.returncode == 0, result.stderr
     logged = events(state)
     commands = [event["command"] for event in logged]
     assert commands.index("workshop-launch") < commands.index("workshop-run")
-    assert commands.index("workshop-run") < commands.index("workshop-remove")
+    assert commands.index("workshop-run") < commands.index("workshop-stop")
+    assert "workshop-remove" not in commands
     assert commands.count("workshop-disconnect") == 2
     workshop_events = [event for event in logged if "project" in event]
     assert all(not event["has_swift"] for event in workshop_events)
@@ -368,35 +421,52 @@ def test_unsupported_workshop_version_fails_before_launch(fake_environment):
         ("SERVER_EXITS", "Swift MCP stopped while Copilot was running"),
     ],
 )
-def test_partial_or_failed_sessions_are_cleaned(fake_environment, failure, description):
+def test_partial_or_failed_sessions_are_stopped_and_kept(fake_environment, failure, description):
     env, state, temporary = fake_environment
     env[failure] = "1"
     result = run_wizard(env)
     assert result.returncode != 0
     assert description in result.stderr
-    assert "workshop-remove" in [event["command"] for event in events(state)]
+    logged = events(state)
+    commands = [event["command"] for event in logged]
+    assert "workshop-stop" in commands
+    assert "workshop-remove" not in commands
+    project = Path(
+        next(event["project"] for event in logged if event["command"] == "workshop-launch")
+    )
+    assert project.is_dir()
     assert list(temporary.iterdir()) == []
 
 
-def test_failed_removal_preserves_session_for_recovery(fake_environment):
+@pytest.mark.parametrize("failure", ["stop", "cleanup-list"])
+def test_failed_cleanup_preserves_session_for_recovery(fake_environment, failure):
     env, state, temporary = fake_environment
-    env["REMOVE_FAIL"] = "1"
+    env["CREATE_USER_FILES"] = "1"
+    if failure == "stop":
+        env["STOP_FAIL"] = "1"
+    else:
+        env["FAIL_STAGE"] = "cleanup-list"
     result = run_wizard(env)
     assert result.returncode != 0
     assert "Cleanup incomplete" in result.stderr
-    assert len(list(temporary.iterdir())) == 1
-    assert "workshop-remove" in [event["command"] for event in events(state)]
+    logged = events(state)
+    project = Path(next(event["project"] for event in logged if event["command"] == "workshop-run"))
+    assert (project / "user-report.txt").read_text() == "project work"
+    assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+    assert ("workshop-stop" in [event["command"] for event in logged]) == (failure == "stop")
+    assert "workshop-remove" not in [event["command"] for event in logged]
+    assert list(temporary.iterdir()) == []
 
 
 @pytest.mark.parametrize(
     ("interrupt", "exit_status"),
     [(signal.SIGHUP, 129), (signal.SIGINT, 130), (signal.SIGTERM, 143)],
 )
-def test_interrupt_stops_the_client_and_removes_its_workshop(
+def test_interrupt_stops_the_client_and_preserves_its_workshop(
     fake_environment, interrupt, exit_status
 ):
     env, state, temporary = fake_environment
-    env["RUN_WAIT"] = "1"
+    env.update(RUN_WAIT="1", CREATE_USER_FILES="1")
     process = subprocess.Popen(
         ["bash", env["FAKE_WIZARD"]],
         stdin=subprocess.PIPE,
@@ -411,7 +481,7 @@ def test_interrupt_stops_the_client_and_removes_its_workshop(
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            if any(event["command"] == "workshop-run" for event in events(state)):
+            if (state / "container-files" / "user-notes.txt").exists():
                 break
             if process.poll() is not None:
                 pytest.fail("Wizard exited before starting Copilot")
@@ -422,7 +492,14 @@ def test_interrupt_stops_the_client_and_removes_its_workshop(
         stdout, stderr = process.communicate(timeout=10)
         assert process.returncode == exit_status, (stdout, stderr)
         assert f"interrupted by {interrupt.name}" in stderr
-        assert "workshop-remove" in [event["command"] for event in events(state)]
+        logged = events(state)
+        project = Path(
+            next(event["project"] for event in logged if event["command"] == "workshop-run")
+        )
+        assert (project / "user-report.txt").read_text() == "project work"
+        assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+        assert "workshop-stop" in [event["command"] for event in logged]
+        assert "workshop-remove" not in [event["command"] for event in logged]
         assert list(temporary.iterdir()) == []
     finally:
         if process.poll() is None:
@@ -457,8 +534,8 @@ def test_invalid_config_stops_before_token_or_workshop_launch(fake_environment):
         ("invalid-key-id", "Invalid caller key ID"),
         ("server-start", "Swift MCP exited during startup"),
         ("server-timeout", "Swift MCP did not become ready in time"),
-        ("mkdir", "Could not prepare the temporary Workshop project"),
-        ("cp", "Could not prepare the temporary Workshop project"),
+        ("mkdir", "Could not prepare the Workshop project directory"),
+        ("cp", "Could not prepare the Workshop project"),
         ("server-after-launch", "Swift MCP stopped during Workshop launch"),
         ("tunnel-connect", "Could not connect the tunnel"),
         ("token-connect", "Could not connect the Copilot token"),
@@ -482,7 +559,7 @@ def test_failure_reports_the_affected_step(fake_environment, failure, descriptio
         assert result.returncode == 7
     assert CALLER_SECRET not in result.stdout + result.stderr
     assert "private-swift-password" not in result.stdout + result.stderr
-    if failure in {"cleanup-list", "rm"}:
+    if failure == "rm":
         assert len(list(temporary.iterdir())) == 1
     else:
         assert list(temporary.iterdir()) == []
@@ -490,13 +567,14 @@ def test_failure_reports_the_affected_step(fake_environment, failure, descriptio
 
 def test_cleanup_failure_does_not_hide_the_original_failure(fake_environment):
     env, state, temporary = fake_environment
-    env.update(CONNECT_FAIL="1", REMOVE_FAIL="1")
+    env.update(CONNECT_FAIL="1", STOP_FAIL="1")
     result = run_wizard(env)
     assert result.returncode != 0
     assert "Could not connect the Copilot token" in result.stderr
     assert "Cleanup incomplete" in result.stderr
-    assert "workshop-remove" in [event["command"] for event in events(state)]
-    assert len(list(temporary.iterdir())) == 1
+    assert "workshop-stop" in [event["command"] for event in events(state)]
+    assert "workshop-remove" not in [event["command"] for event in events(state)]
+    assert list(temporary.iterdir()) == []
 
 
 def test_failed_browser_open_explains_the_manual_alternative(fake_environment):
