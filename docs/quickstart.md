@@ -12,9 +12,15 @@ From the repository root, run:
 just quickstart
 ```
 
-The wizard prompts for a protected OpenStack RC file path and a JSON container
+The wizard prompts for a protected OpenStack RC file path and a container
 allowlist if `SWIFT_MCP_OPENRC` or `SWIFT_MCP_CONTAINERS` is unset or empty.
-Alternatively, supply both in your host environment before starting:
+Enter one name (`test-container`), comma-separated names such as
+`foo-container, bar-container`, or a JSON array (`["foo", "bar"]`). Spaces
+around comma-separated names are ignored. Use a JSON array for names containing
+commas, starting with `[`, or having leading or trailing spaces. The wizard also
+accepts these forms in `SWIFT_MCP_CONTAINERS`; the server and manual setup still
+require a JSON array.
+Alternatively, supply both settings in your host environment before starting:
 
 ```sh
 export SWIFT_MCP_OPENRC='/path/to/test-swift.rc'

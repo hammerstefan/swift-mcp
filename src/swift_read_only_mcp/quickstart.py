@@ -34,7 +34,8 @@ VALIDATION_MESSAGES = {
         "it is parsed as data, not executed as a shell script."
     ),
     "Invalid container allowlist": (
-        "SWIFT_MCP_CONTAINERS must be a JSON array of valid container names."
+        "Invalid SWIFT_MCP_CONTAINERS: expected a JSON array of valid container names. "
+        "In the wizard, enter names separated by commas or as a JSON array."
     ),
     "Swift authentication is not configured": (
         "The Swift RC file does not contain complete supported credentials."
@@ -147,12 +148,27 @@ def caller_attributes(key_id: int) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Swift MCP quickstart helper")
     parser.add_argument(
-        "action", choices=("validate", "token-status", "store-token", "ensure-key", "caller-key")
+        "action",
+        choices=(
+            "validate",
+            "normalize-containers",
+            "token-status",
+            "store-token",
+            "ensure-key",
+            "caller-key",
+        ),
     )
     parser.add_argument("value", nargs="?")
     args = parser.parse_args()
     try:
-        if args.action == "validate":
+        if args.action == "normalize-containers":
+            raw = os.environ["SWIFT_MCP_CONTAINERS"]
+            print(
+                raw
+                if raw.lstrip().startswith("[")
+                else json.dumps([name.strip() for name in raw.split(",")])
+            )
+        elif args.action == "validate":
             if not args.value:
                 raise ValueError("Missing checkout path")
             validate_config(Path(args.value))

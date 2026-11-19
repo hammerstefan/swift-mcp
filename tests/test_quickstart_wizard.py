@@ -4,6 +4,7 @@ import json
 import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -55,8 +56,13 @@ elif name == "python":
     action = args[2]
     event("helper-" + action, rc=os.environ.get("SWIFT_MCP_OPENRC"),
           containers=os.environ.get("SWIFT_MCP_CONTAINERS"))
+    if action == "normalize-containers":
+        os.execv(os.environ["REAL_PYTHON"], [os.environ["REAL_PYTHON"], *args])
+    if action == "validate" and os.environ.get("REAL_VALIDATE"):
+        os.execv(os.environ["REAL_PYTHON"], [os.environ["REAL_PYTHON"], *args])
     if action == "validate" and (failure == "validate" or os.environ.get("INVALID_CONFIG")):
-        print("SWIFT_MCP_CONTAINERS must be a JSON array of valid container names.",
+        print("Invalid SWIFT_MCP_CONTAINERS: expected a JSON array of valid container names. "
+              "In the wizard, enter names separated by commas or as a JSON array.",
               file=sys.stderr)
         sys.exit(1)
     if failure == action or (failure == "token-verify" and action == "token-status"
@@ -178,6 +184,7 @@ def fake_environment(tmp_path):
         "FAKE_STATE": str(state),
         "FAKE_COMMAND": str(fake),
         "FAKE_CALLER_SECRET": CALLER_SECRET,
+        "REAL_PYTHON": sys.executable,
         "CHECKOUT_PROJECT": str(checkout / "quickstart"),
         "FAKE_WIZARD": str(wizard),
         "SWIFT_MCP_OPENRC": "/protected/test.rc",
@@ -254,6 +261,71 @@ def test_missing_swift_settings_are_prompted_and_not_persisted(fake_environment)
     assert validation["rc"] == "/protected/prompted.rc"
     assert validation["containers"] == '["prompted"]'
     assert list(temporary.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("entered", "expected"),
+    [
+        ("test-container", ["test-container"]),
+        ("foo-container, bar-container", ["foo-container", "bar-container"]),
+        ('["foo", "bar"]', ["foo", "bar"]),
+        ('["foo, bar"]', ["foo, bar"]),
+        ("[]", []),
+    ],
+)
+def test_prompt_accepts_container_names(fake_environment, tmp_path, entered, expected):
+    env, state, _ = fake_environment
+    rc = tmp_path / "swift.rc"
+    rc.write_text("OS_AUTH_TOKEN='test-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n")
+    rc.chmod(0o600)
+    env.update(SWIFT_MCP_OPENRC=str(rc), REAL_VALIDATE="1", REAL_PYTHON=sys.executable)
+    del env["SWIFT_MCP_CONTAINERS"]
+    del env["OS_PASSWORD"]
+
+    result = run_wizard(env, f"\ny\n{entered}\n")
+
+    assert result.returncode == 0, result.stderr
+    validation = next(event for event in events(state) if event["command"] == "helper-validate")
+    assert json.loads(validation["containers"]) == expected
+
+
+@pytest.mark.parametrize("entered", ["foo,,bar", '["foo",', "invalid/name"])
+def test_invalid_container_input_stops_before_server_or_workshop(
+    fake_environment, tmp_path, entered
+):
+    env, state, _ = fake_environment
+    rc = tmp_path / "swift.rc"
+    rc.write_text("OS_AUTH_TOKEN='test-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n")
+    rc.chmod(0o600)
+    env.update(SWIFT_MCP_OPENRC=str(rc), REAL_VALIDATE="1")
+    del env["SWIFT_MCP_CONTAINERS"]
+    del env["OS_PASSWORD"]
+
+    result = run_wizard(env, f"\ny\n{entered}\n")
+
+    assert result.returncode != 0
+    assert "Invalid SWIFT_MCP_CONTAINERS" in result.stderr
+    assert "comma" in result.stderr
+    assert not {"server", "workshop-launch"} & {event["command"] for event in events(state)}
+
+
+def test_environment_container_names_are_accepted_by_the_wizard(fake_environment, tmp_path):
+    env, state, _ = fake_environment
+    rc = tmp_path / "swift.rc"
+    rc.write_text("OS_AUTH_TOKEN='test-token'\nOS_STORAGE_URL='https://storage.example/v1/test'\n")
+    rc.chmod(0o600)
+    env.update(
+        SWIFT_MCP_OPENRC=str(rc),
+        SWIFT_MCP_CONTAINERS="foo-container, bar-container",
+        REAL_VALIDATE="1",
+    )
+    del env["OS_PASSWORD"]
+
+    result = run_wizard(env)
+
+    assert result.returncode == 0, result.stderr
+    validation = next(event for event in events(state) if event["command"] == "helper-validate")
+    assert json.loads(validation["containers"]) == ["foo-container", "bar-container"]
 
 
 def test_missing_token_opens_form_and_stores_it_in_keyring(fake_environment):
@@ -364,7 +436,7 @@ def test_invalid_config_stops_before_token_or_workshop_launch(fake_environment):
     result = run_wizard(env)
     assert result.returncode != 0
     assert "Swift MCP configuration validation failed; see the error above" in result.stderr
-    assert "SWIFT_MCP_CONTAINERS must be a JSON array" in result.stderr
+    assert "Invalid SWIFT_MCP_CONTAINERS" in result.stderr
     commands = [event["command"] for event in events(state)]
     assert "helper-token-status" not in commands
     assert "workshop-launch" not in commands

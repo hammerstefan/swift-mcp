@@ -330,7 +330,7 @@ run_wizard() {
   IFS= read -r session_response || fail 'Cancelled.'
   [[ -z $session_response || $session_response =~ ^[Yy]([Ee][Ss])?$ ]] || fail 'Cancelled.'
   [[ -n ${SWIFT_MCP_OPENRC:-} ]] || ask SWIFT_MCP_OPENRC 'Path to your protected OpenStack RC file:' || fail 'OpenStack RC file path was not provided.'
-  [[ -n ${SWIFT_MCP_CONTAINERS:-} ]] || ask SWIFT_MCP_CONTAINERS 'Container allowlist as JSON, e.g. ["test-container"]:' || fail 'Container allowlist was not provided.'
+  [[ -n ${SWIFT_MCP_CONTAINERS:-} ]] || ask SWIFT_MCP_CONTAINERS 'Container names (comma-separated or JSON array):' || fail 'Container allowlist was not provided.'
   [[ -n ${SWIFT_MCP_OPENRC:-} && -n ${SWIFT_MCP_CONTAINERS:-} ]] || fail 'Both Swift settings are required.'
   export SWIFT_MCP_OPENRC SWIFT_MCP_CONTAINERS
 
@@ -342,6 +342,8 @@ run_wizard() {
   export UV_PROJECT_ENVIRONMENT="$RUN_DIR/venv"
   (cd -- "$ROOT" && uv sync --locked --no-dev) || fail 'Swift MCP installation failed.'
   local python="$RUN_DIR/venv/bin/python"
+  SWIFT_MCP_CONTAINERS=$("$python" -m swift_read_only_mcp.quickstart normalize-containers) || fail 'Could not prepare the container allowlist.'
+  export SWIFT_MCP_CONTAINERS
   "$python" -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Swift MCP configuration validation failed; see the error above.'
 
   stage "Connect your Copilot credential"
