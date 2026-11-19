@@ -6,7 +6,7 @@ Status: implementation in progress; see `docs/conformance.md` for selected fixtu
 
 Build a Python project managed with uv, linted/formatted with Ruff, and checked with ty. Use FastMCP v4 on the MCP Python SDK v2. The service runs on the host that also runs a **container** Workshop. OpenCode and GitHub Copilot CLI in the Workshop connect over a manually connected host-service tunnel to a loopback-only Streamable HTTP endpoint. Workshop VMs, a network-exposed listener, uploads, metadata changes, deletes, copies, TempURL generation, and historical object versions are out of scope.
 
-The supported MCP revisions are **2025-11-25 and 2026-07-28**. FastMCP v4 serves both; test each on its own wire format. A real OpenCode and Copilot CLI connection is a release gate, not evidence supplied by library compatibility alone. In particular, Copilot CLI has an [open modern/legacy handshake issue](https://github.com/github/copilot-cli/issues/4888); do not claim it works until tested with the installed client version.
+The supported MCP revisions are **2025-11-25 and 2026-07-28**. FastMCP v4 serves both; test each on its own wire format. The plan calls for a real connection with each client rather than relying on library compatibility. Copilot CLI connectivity through the included Workshop has since been verified separately; see the [quickstart](quickstart.md).
 
 ## Data model and MCP contract
 

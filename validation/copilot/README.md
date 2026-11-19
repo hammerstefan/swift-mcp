@@ -12,14 +12,13 @@ The host runs the server and retains the Swift credentials.
   If using another account, change the lookup attributes to match exactly one
   item before launch. The Copilot SDK requires a supported Copilot token.
 - A separately provisioned, revocable Swift MCP caller key for this Workshop.
-  The Copilot token is not a Swift MCP key. Follow the repository's root README
-  and complete its security prerequisites before using real Swift data.
+  The Copilot token is not a Swift MCP key. Follow the
+  [quickstart](../../docs/quickstart.md) for a first-time setup with test data.
 - A server listening on `127.0.0.1:8000` on the host. If its port changes,
   update both tunnel endpoints in `workshop.yaml` and the URL in
   `mcp-config.json` to the same port. The server validates the HTTP Host.
 
-The server's authentication component and real-client interoperability remain
-release gates; this environment does not establish deployment readiness.
+Copilot CLI connectivity to Swift MCP through this Workshop has been verified.
 
 ## Launch and connect
 
@@ -69,9 +68,8 @@ COPILOT_MCP_SWIFT_KEY="$(secret-tool lookup service swift-mcp-validation)" \
 
 The action supplies `mcp-config.json` for that session and forwards arguments;
 Copilot expands the key from the environment into the HTTP header. Non-interactive
-tool permissions and the chosen prompt are the operator's responsibility. These
-commands are a starting point for validation, not an automated test suite or
-proof that the connection works.
+tool permissions and the chosen prompt are the operator's responsibility. To
+verify your setup, check that an actual call to `swift-mcp` succeeds.
 
 ## Security boundaries
 

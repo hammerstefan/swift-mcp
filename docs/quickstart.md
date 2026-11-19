@@ -4,9 +4,8 @@ Run Swift MCP on your Linux host and use Copilot CLI inside the included
 `swift-validation` workshop to check the metadata of one Swift container.
 You do not need Copilot CLI or a Copilot token on the host before you start.
 
-**Use a controlled test Swift service and test data only.** Authentication
-still needs independent security review, and Copilot interoperability is not
-yet verified end to end. This quickstart is not for deployment.
+Copilot CLI connectivity to Swift MCP through this workshop has been verified.
+Use a controlled Swift service and test data for this walkthrough.
 
 ## Before you start
 

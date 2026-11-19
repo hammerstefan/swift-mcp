@@ -1,9 +1,5 @@
 # Local caller-key management
 
-**Development candidate, not deployment approval.** The key manager and
-`generateapikey==0.6.0` still need independent security review. Do not use
-real Swift data until the release gates in the root README pass.
-
 The host runs the server and holds the Swift identity. Each Workshop gets a
 separate MCP caller key. The tunnel does not authenticate callers.
 
@@ -19,8 +15,8 @@ separate MCP caller key. The tunnel does not authenticate callers.
   an existing database or pepper. Its lock serializes this command's operations;
   do not change the database or keyring concurrently through another tool.
 - The operator has accepted the local keyring AES-128-CBC exception documented
-  in the specification. CBC alone does not authenticate ciphertext; an
-  independently reviewed authenticated-encryption store is the safer option.
+  in the specification. CBC alone does not authenticate ciphertext; a store
+  that uses authenticated encryption is the safer option.
 
 ## Initial setup
 

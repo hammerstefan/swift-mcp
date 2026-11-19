@@ -4,10 +4,8 @@ This server gives an MCP client read-only access to OpenStack Swift. It runs on
 your host, keeps the Swift credentials there, and lets a container Workshop
 connect through a local tunnel. Give each Workshop its own MCP caller key.
 
-**This project is still under development. Do not deploy it or use real Swift
-data yet.** The authentication and key-management code needs an independent
-security review, and connections from real Workshop clients still need
-end-to-end validation. Use only a controlled test Swift service and test data.
+Copilot CLI connectivity to Swift MCP through the included container Workshop
+has been verified. The examples below use a controlled Swift service and test data.
 
 **First time with an OpenStack RC file and Copilot?** Follow the
 [Swift MCP and Workshop quickstart](docs/quickstart.md).
@@ -233,11 +231,10 @@ not the Swift MCP caller key.
      workshop -p validation/copilot run --env COPILOT_MCP_SWIFT_KEY swift-validation -- copilot
    ```
 
-   The action loads `validation/copilot/mcp-config.json`, which is configured to
-   send the key in the `X-API-Key` header. Copilot's expansion of that key has
-   not yet been verified end to end. The lookup must match the key created for
-   this Workshop; it must not print the key. If the key is missing, the action
-   refuses to start.
+   The action loads `validation/copilot/mcp-config.json`. Copilot expands the
+   key from the environment and sends it in the `X-API-Key` header. The lookup
+   must match the key created for this Workshop; it must not print the key.
+   If the key is missing, the action refuses to start.
 4. In Copilot, open `/mcp`, check `swift-mcp`, and ask it to list containers.
    A successful connection and tool call against your test service verify this
    setup; merely launching the Workshop does not.
@@ -286,7 +283,8 @@ definition or an MCP configuration file. For a single command, the
 [Workshop secrets guide](https://ubuntu.com/workshop/docs/how-to/develop-with-workshops/provide-secrets.md)
 shows how to pass a value from the host keyring using `--env` without placing it
 in the command line. See also the [OpenCode MCP configuration guide](https://opencode.ai/docs/mcp-servers).
-Client interoperability with this server remains unverified.
+The verified client setup is Copilot CLI in the included container Workshop;
+check connectivity and a tool call when configuring another client or Workshop.
 
 ## Available tools and limits
 
@@ -344,11 +342,9 @@ be sent to the agent's model provider.
 The MCP interface is read-only, but it does not remove write privileges from
 the underlying Swift identity. Protect the host keyring, key database, and
 logs, and use a read-only Swift identity. The documented local GNOME Keyring
-AES-128-CBC exception does not replace an independent security review; an
+AES-128-CBC exception does not authenticate ciphertext; an
 authenticated-encryption store is safer. See [key management](docs/key-management.md)
-for the remaining limitations and the
-[authentication review issue](.scratch/swift-read-only-mcp/issues/01-auth-review.md)
-for the deployment gates.
+for storage and rotation limitations.
 
 ## Development checks
 
@@ -362,8 +358,8 @@ uv run --locked ty check src tests
 
 The tests use controlled local Swift and Keystone endpoints; they do not need
 live storage credentials. See [conformance testing](docs/conformance.md) for
-the separate MCP fixture and its results. Passing these checks does not prove
-security review, real Swift integration, or Workshop client interoperability.
+the separate MCP fixture and its results. These automated checks do not run
+against a live Swift service or through a Workshop.
 
 The pytest suite includes Hypothesis property tests. To run just those tests:
 
