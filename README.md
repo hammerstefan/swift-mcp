@@ -1,14 +1,17 @@
 # Swift MCP server
 
-This server gives an MCP client read-only access to OpenStack Swift. It runs on
-your host, keeps the Swift credentials there, and lets a container Workshop
-connect through a local tunnel. Give each Workshop its own MCP caller key.
+Swift MCP gives Model Context Protocol (MCP) clients read-only access to
+OpenStack Swift: list containers and objects, inspect metadata, and read object contents. The
+server runs on your host and keeps the Swift credentials there. A client in a
+container Workshop connects through a local tunnel with its own caller key.
 
-Copilot CLI connectivity to Swift MCP through the included container Workshop
-has been verified. The examples below use a controlled Swift service and test data.
+| Goal | Guide and project | Workshop name |
+| --- | --- | --- |
+| Make your first Swift call with Copilot and an OpenStack RC file | [Guided quickstart](docs/quickstart.md) in `quickstart/` | `swift-mcp-quickstart` |
+| Set up the host server and connect Copilot yourself | [Manual setup below](#before-you-start) using `validation/copilot/` | `swift-validation` |
 
-**First time with an OpenStack RC file and Copilot?** Follow the
-[Swift MCP and Workshop quickstart](docs/quickstart.md).
+Copilot CLI connectivity through the validation Workshop has been verified.
+To use another client, see [Connect an existing Workshop](#connect-an-existing-workshop).
 
 ## Before you start
 
@@ -18,14 +21,15 @@ You need:
 - An unlocked user-session Secret Service keyring and `secret-tool`. On Ubuntu,
   `secret-tool` is provided by the `libsecret-tools` package. Run the server as
   the unprivileged user who owns the keyring, not as root.
-- A Swift account and either a Keystone v3 password or a pre-issued Swift token
-  and storage URL. Use of a
-  [dedicated read-only Swift identity](#read-only-swift-deployment) is recommended.
+- A [dedicated read-only Swift identity](#read-only-swift-deployment) with
+  access to a test container whose name and metadata you can share with
+  Copilot. Use either Keystone v3 password credentials or a pre-issued Swift
+  token with its storage URL.
 - [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later and a container
   Workshop. Workshop VM tunnels are not supported.
 
-The examples below run from the root of this repository, on the host. They use
-the included Copilot validation Workshop, named `swift-validation`.
+Run the manual setup from the repository root in **two host terminals** in the
+same keyring session. Use terminal 1 for the server and terminal 2 for Copilot.
 
 ## 1. Install the server
 
@@ -33,76 +37,48 @@ the included Copilot validation Workshop, named `swift-validation`.
 uv sync --locked
 ```
 
-## 2. Create a caller key
+## 2. Create or find a caller key
 
-Unlock your keyring, then run:
+Unlock your keyring. In terminal 1, choose the command for this host user:
 
-```sh
-uv run --locked swift-mcp-keys init swift-validation
-```
+| Current state | Command |
+| --- | --- |
+| No Swift MCP key store yet | `uv run --locked swift-mcp-keys init swift-validation` |
+| Store exists; `swift-validation` already has a key, or you're unsure | `uv run --locked swift-mcp-keys status swift-validation` |
+| Store exists; `swift-validation` has no active or pending key | `uv run --locked swift-mcp-keys add swift-validation` |
 
-This creates a protected key database at `~/.local/state/swift-mcp/keys.db` and
-stores a pepper and a new caller key in your keyring. It prints a non-secret
-numeric `key_id`; note it down for the Workshop command below. It does **not**
-print the key itself.
-
-Run `init` only for the first Workshop on this host. If you have already
-initialized the key database, create a key for another Workshop instead:
-
-```sh
-uv run --locked swift-mcp-keys add swift-validation
-```
-
-If `swift-validation` already has an active key, use
-`uv run --locked swift-mcp-keys status swift-validation` to find its ID.
-
-If initialization fails, inspect the local state before retrying; do not
-overwrite the database or keyring items. See [key management](docs/key-management.md)
-for recovery, rotation, and revocation. Pepper rotation is not implemented.
+Note the active key's numeric `key_id` for terminal 2. The ID is safe to
+display. The client receives the **caller key**; the **pepper**, a secret used
+to verify caller-key hashes, stays on the host. If setup failed partway through,
+follow [key recovery](docs/key-management.md#recover-an-interrupted-key-operation)
+before trying again.
 
 ## 3. Configure Swift and start the server
 
-Choose **one** of the following credential modes. Provide secrets from your
-host's secret manager; do not put secret values in project files, commands, shell
-history, or logs. Turn off shell tracing (`set +x`) before retrieving secrets.
+In terminal 1, choose where the server gets its Swift credentials:
+
+- **RC file:** Follow [OpenStack RC file](#openstack-rc-file), then skip to
+  [Restrict access and start](#restrict-access-and-start).
+- **Environment:** Leave `SWIFT_MCP_OPENRC` unset. Follow either
+  [Keystone v3 password](#keystone-v3-password) or [Pre-issued token](#pre-issued-token).
+
+Keep secret values out of commands, shell history, project files, and logs.
 
 ### OpenStack RC file
 
-You can provide an OpenStack RC file like `validation/example_creds.rc` instead
-of exporting the Swift authentication variables individually:
+Use a protected RC file from your secret manager, owned by your user and
+readable only by you, outside the checkout (preferably on a memory-backed
+filesystem). Keep it on the host. The [example RC file](validation/example_creds.rc)
+shows the format using placeholders. Set the path to **your** file:
 
 ```sh
-export SWIFT_MCP_OPENRC=/path/to/credentials.rc
-uv run --locked swift-mcp-keys start swift-validation
+export SWIFT_MCP_OPENRC="$HOME/credentials.rc"
 ```
 
-The path can also start with `~/`, which the server resolves against its own
-home directory. In shell commands, `"$HOME/credentials.rc"` is another option.
-
-The file is read once at startup and must be a UTF-8 regular file no larger than
-64 KiB. It can contain `export` or plain assignments for the Swift `OS_*`
-authentication and endpoint variables described below, `OS_TENANT_NAME`,
-`ST_AUTH_VERSION`, `OS_CACERT`, `OS_CERT`, and `OS_KEY`. Values can use single
-or double quotes and `$NAME` or `${NAME}` references to supported assignments
-earlier in the same file. Unsupported `OS_*` assignments, duplicates, undefined
-references, shell expansions and command substitutions in those assignments
-cause startup to fail. The file is **not sourced**: other lines, including
-`NOVA_*` and shell commands, are ignored. Do not rely on conditionals, prompts,
-or other shell processing to set credentials. Use the environment-based setup
-below if the RC file needs such processing.
-
-When `SWIFT_MCP_OPENRC` is set, the file supplies the complete Swift
-authentication configuration; ambient Swift authentication variables are
-ignored. TLS settings may still come from the environment, with file values
-taking precedence. The same credential-mode and endpoint validation applies.
-Restart the server after changing the file.
-
-An RC file containing a password or token is a secret. Prefer the environment
-and host keyring setup below; if an RC file is required, obtain it securely from
-your secret manager into a protected, owner-only location outside the repository
-(preferably a memory-backed filesystem). Do not commit it, copy it into a
-Workshop, or expose it in logs. The example contains placeholders and is not a
-usable credential. Use only a read-only test identity.
+The file must supply one complete credential mode: password or token. The
+server reads it once at startup without running shell commands. If it needs
+to prompt for a password or run a command, use the environment setup instead.
+See [RC file syntax and precedence](#rc-file-syntax-and-precedence) for details.
 
 ### Keystone v3 password
 
@@ -118,17 +94,17 @@ export OS_PROJECT_NAME="your-project"
 export OS_PROJECT_DOMAIN_NAME="your-project-domain"
 ```
 
-Set `OS_PASSWORD` securely in the same terminal. For example, to store the test
-password in the host keyring, run the following command and enter it at the
-prompt:
+To provide `OS_PASSWORD` from the host keyring, store the test password once.
+Enter it at the prompt:
 
 ```sh
 secret-tool store --label="Swift test password" --collection=default service swift-mcp purpose swift-password
 ```
 
-Then retrieve it without displaying it:
+Retrieve it in the server terminal with shell tracing off:
 
 ```sh
+set +x
 OS_PASSWORD="$(secret-tool lookup service swift-mcp purpose swift-password)"
 export OS_PASSWORD
 ```
@@ -139,12 +115,9 @@ Alternatively, use `OS_USER_ID` instead of the user name and domain, and
 endpoint from Keystone's service catalog. `OS_ENDPOINT_TYPE` is also supported;
 if both it and `OS_INTERFACE` are set, `OS_ENDPOINT_TYPE` takes precedence.
 
-If your credentials include `OS_STORAGE_URL`, the server authenticates with
-Keystone and uses that explicit Swift URL instead of the catalog endpoint. The
-URL must identify the intended test account; the server sends the Keystone
-token to it. `OS_INTERFACE` and the catalog selection settings do not choose a
-different storage endpoint when this URL is set. Make sure `OS_AUTH_TOKEN` is
-not set in password mode.
+If you set `OS_STORAGE_URL`, it overrides catalog selection. Check that the URL
+belongs to the intended Swift account: the server sends its Keystone token
+there. Leave `OS_AUTH_TOKEN` unset in password mode.
 
 ### Pre-issued token
 
@@ -159,17 +132,19 @@ the token at the prompt, then retrieve it without displaying it:
 
 ```sh
 secret-tool store --label="Swift test token" --collection=default service swift-mcp purpose swift-token
+set +x
 OS_AUTH_TOKEN="$(secret-tool lookup service swift-mcp purpose swift-token)"
 export OS_AUTH_TOKEN
 ```
 
 Do not also set the Keystone password-mode variables above: the server rejects
 mixed credential modes. The server does not refresh pre-issued tokens; replace
-an expired token and restart it.
+an expired token and restart the server.
 
-### Start
+### Restrict access and start
 
-Optionally restrict access to specific containers before starting. For example:
+Replace `test-container` with the name of your test container. Set the
+allowlist in terminal 1 **before** starting the server:
 
 ```sh
 export SWIFT_MCP_CONTAINERS='["test-container"]'
@@ -181,6 +156,10 @@ Swift identity and allowlist. Container names must not contain `/` or be `.` or
 `..`. Object names can contain `/`, but cannot contain `.` or `..` as complete
 segments.
 
+External Swift and Keystone endpoints must use HTTPS. Only loopback test
+endpoints can use plain HTTP. If your service uses a private certificate
+authority, set `OS_CACERT` to its trusted CA file; keep TLS verification enabled.
+
 Start the server in the foreground:
 
 ```sh
@@ -191,34 +170,37 @@ Leave this terminal open. The command retrieves the pepper from the keyring,
 checks that the Workshop has a valid key, and starts the server at
 `http://127.0.0.1:8000/mcp`. Stop it with `Ctrl+C`.
 
-TLS certificate verification for Swift is enabled by default. Supply a trusted
-CA using `OS_CACERT` if needed; do not disable verification to work around an
-unknown certificate error. External Swift and Keystone endpoints must use
-HTTPS; plaintext HTTP is accepted only for loopback test endpoints.
+## 4. Connect the validation Workshop
 
-## 4. Connect the included Workshop
+In **terminal 2**, open the repository root. The GitHub token authenticates
+Copilot to GitHub. The MCP caller key authenticates Copilot to Swift MCP.
 
-Open another host terminal in the repository root. The included example uses
-Copilot CLI and needs a separate GitHub Copilot credential. The Copilot token is
-not the Swift MCP caller key.
-
-1. In `validation/copilot/workshop.yaml`, change the `copilot-token` lookup
-   attributes to match exactly one supported Copilot token in your host
-   keyring. The checked-in `username` belongs to a specific account. If you
-   need to store your token, set that `username` to a unique label of your
-   choice and use the same label in the command below. Enter the token at the
-   prompt; do not put its value in the YAML.
+1. In [the validation Workshop definition](validation/copilot/workshop.yaml),
+   set the `copilot-token` lookup attributes to match exactly one
+   [supported Copilot token](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli#authenticating-with-environment-variables)
+   in your host keyring. The checked-in `username` is account-specific. If you
+   need to store a token, choose a unique label and use it for `username` in
+   the YAML and in place of `your-account-label` below. Enter the token only
+   at the prompt:
 
    ```sh
    secret-tool store --label="Copilot token" --collection=default service copilot-cli username your-account-label
    ```
 
-   Replace `your-account-label` with the label used in the YAML. See the
-   [validation Workshop README](validation/copilot/README.md).
-2. Launch the Workshop and connect its token and tunnel:
+2. On first use, launch the Workshop:
 
    ```sh
    workshop -p validation/copilot launch
+   ```
+
+   On later runs, use `workshop -p validation/copilot start` if it is stopped.
+   If you changed its definition, run `workshop -p validation/copilot refresh`
+   while it is running.
+
+3. Connect the token and tunnel. If either is already connected to the expected
+   slot, skip its `connect` command:
+
+   ```sh
    workshop -p validation/copilot connect swift-validation/copilot:github-token :copilot-token
    workshop -p validation/copilot connect swift-validation/copilot:swift-mcp :swift-mcp
    workshop -p validation/copilot connections swift-validation
@@ -227,38 +209,48 @@ not the Swift MCP caller key.
    Check that both connections appear as `manual`. The tunnel connects the
    Workshop's `127.0.0.1:8000` to the host server; it does not authenticate
    callers.
-3. Replace `42` below with the `key_id` printed by `init` or `add`. Start
-   Copilot with the caller key retrieved from the host keyring for this run:
 
-   ```sh
-   set +x
-   KEY_ID=42
-   COPILOT_MCP_SWIFT_KEY="$(secret-tool lookup service swift-mcp purpose caller workshop swift-validation key-id "$KEY_ID")" \
-     workshop -p validation/copilot run --env COPILOT_MCP_SWIFT_KEY swift-validation -- copilot
-   ```
+### Pass the caller key to Copilot
 
-   The action loads `validation/copilot/mcp-config.json`. Copilot expands the
-   key from the environment and sends it in the `X-API-Key` header. The lookup
-   must match the key created for this Workshop; it must not print the key.
-   If the key is missing, the action refuses to start.
-4. In Copilot, open `/mcp`, check `swift-mcp`, and ask it to list containers.
-   A successful connection and tool call against your test service verify this
-   setup; merely launching the Workshop does not.
+Replace `42` with the active `key_id` from [caller-key setup](#2-create-or-find-a-caller-key).
+Turn off shell tracing before retrieving the key. `--env` takes the variable's **name**:
+
+```sh
+set +x
+KEY_ID=42
+COPILOT_MCP_SWIFT_KEY="$(secret-tool lookup service swift-mcp purpose caller workshop swift-validation key-id "$KEY_ID")" \
+  workshop -p validation/copilot run --env COPILOT_MCP_SWIFT_KEY swift-validation -- copilot
+```
+
+The action loads [the MCP configuration](validation/copilot/mcp-config.json).
+Copilot sends the key in `X-API-Key`; the action refuses to start without it.
+Open `/mcp` and check for `swift-mcp`. Ask Copilot to call `get_container_stats`
+for the container you allowed. Inspect the **tool result** for `object_count`
+and `bytes_used`. With an allowlist, `list_containers` can succeed without
+contacting Swift.
+
+When finished, exit Copilot. In terminal 2, disconnect both interfaces and
+stop the Workshop. Then press `Ctrl+C` in terminal 1 to stop the server.
+
+```sh
+workshop -p validation/copilot disconnect swift-validation/copilot:github-token
+workshop -p validation/copilot disconnect swift-validation/copilot:swift-mcp
+workshop -p validation/copilot stop
+```
 
 If you change `SWIFT_MCP_PORT` on the host, update both tunnel endpoints in
 `validation/copilot/workshop.yaml` and the URL in
 `validation/copilot/mcp-config.json` to the same port. Refresh the Workshop and
-reconnect the tunnel after changing its endpoints. Manual connections also need
-to be re-established after `workshop restore` or removing and relaunching the
-Workshop.
+reconnect the tunnel after changing its endpoints. After `workshop restore` or
+removal and relaunch, [connect both the token and the tunnel](#4-connect-the-validation-workshop)
+and check that both show `manual`.
 
 ## Connect an existing Workshop
 
-For a different container Workshop, create a separate caller key with
-`swift-mcp-keys add <workshop-name>`. Add a tunnel slot to its `system` SDK and
-a tunnel plug to the SDK that runs your MCP client. For example, merge these
-entries into your existing Workshop definition, replacing `<client-sdk>` with
-that SDK's name:
+Create a [caller key](docs/key-management.md#initial-setup) using the name in
+your Workshop definition. The `system` SDK provides the **slot** (host-side
+endpoint); the client SDK uses the **plug** (Workshop-side endpoint). Merge
+these entries into your definition. Replace `copilot` with your client SDK:
 
 ```yaml
 sdks:
@@ -267,38 +259,41 @@ sdks:
       swift-mcp:
         interface: tunnel
         endpoint: 127.0.0.1:8000
-  - name: <client-sdk>
+  - name: copilot
     plugs:
       swift-mcp:
         interface: tunnel
         endpoint: 127.0.0.1:8000
 ```
 
-Launch the Workshop, or run `workshop refresh` if it already exists. Then connect
-the tunnel explicitly:
+From that Workshop's project directory, launch it or refresh the running
+Workshop. Connect the tunnel explicitly, replacing `my-workshop` and
+`copilot` with your Workshop and client SDK names:
 
 ```sh
-workshop connect <workshop-name>/<client-sdk>:swift-mcp :swift-mcp
-workshop connections <workshop-name>
+workshop connect my-workshop/copilot:swift-mcp :swift-mcp
+workshop connections my-workshop
 ```
 
 Configure the client for Streamable HTTP at `http://127.0.0.1:8000/mcp` and
 send the Workshop's caller key in the `X-API-Key` header on every request.
-Deliver the key through an approved secret mechanism, not the Workshop
-definition or an MCP configuration file. For a single command, the
-[Workshop secrets guide](https://ubuntu.com/workshop/docs/how-to/develop-with-workshops/provide-secrets.md)
-shows how to pass a value from the host keyring using `--env` without placing it
-in the command line. See also the [OpenCode MCP configuration guide](https://opencode.ai/docs/mcp-servers).
-The verified client setup is Copilot CLI in the included container Workshop;
-check connectivity and a tool call when configuring another client or Workshop.
+Pass the key from the host keyring for a single command using `--env`, as in
+the [Copilot example](#pass-the-caller-key-to-copilot). Keep the value out of
+the Workshop definition and MCP configuration file. Verify the setup with
+`get_container_stats` on an allowed container. See the [Workshop secrets guide](https://ubuntu.com/workshop/docs/how-to/develop-with-workshops/provide-secrets.md)
+and [OpenCode MCP configuration guide](https://opencode.ai/docs/mcp-servers) for client setup.
 
 ## Available tools and limits
 
-The server provides `get_account_stats`, `list_containers`,
-`get_container_stats`, `list_objects`, `get_object_stats`, and `read_object`.
-It also exposes the resource template `swift://object/{container}/{object_name}`;
-percent-encode special characters in resource URIs. It does not expose Swift
-write operations.
+| Scope | Tools |
+| --- | --- |
+| Account | `get_account_stats`, `list_containers` |
+| Container | `get_container_stats`, `list_objects` |
+| Current object | `get_object_stats` for metadata; `read_object` for a byte range |
+
+Use the resource `swift://object/{container}/{object_name}` to read a complete
+object that fits within the byte limit. Percent-encode special characters in
+the URI. For larger objects, use `read_object` with `offset` and `length`.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
@@ -308,54 +303,74 @@ write operations.
 | `SWIFT_MCP_LISTING_BYTE_LIMIT` | `4194304` | Maximum backend listing response bytes |
 | `SWIFT_MCP_RATE_LIMIT` | `60` | Requests per caller key per minute |
 | `SWIFT_MCP_OPENRC` | unset | Path to an OpenStack RC file supplying Swift authentication |
+| `SWIFT_MCP_CONTAINERS` | unset (all readable containers) | [JSON array of allowed container names](#restrict-access-and-start); `[]` allows none |
 
 The numeric limits must be positive integers; the port must also be at most 65535.
 Large limits can use substantial memory.
+
 With a container allowlist, `list_containers` returns the configured names, not
 an account-wide listing, and `get_account_stats` is unavailable. An allowlisted
 name can appear even if the container is missing or unreadable; use
 `get_container_stats` to check it. See [ADR 0002](docs/adr/0002-allowlisted-container-listing.md).
 
+## RC file syntax and precedence
+
+`SWIFT_MCP_OPENRC` must point to a UTF-8 regular file no larger than 64 KiB.
+A leading `~/` resolves to the server user's home directory.
+
+- **Accepted assignments:** `NAME=value` and `export NAME=value` for the Swift
+  authentication and endpoint variables above, including `OS_USER_DOMAIN_ID`,
+  `OS_PROJECT_DOMAIN_ID`, `OS_TENANT_NAME`, `OS_AUTH_VERSION`, `OS_IDENTITY_API_VERSION`,
+  `ST_AUTH_VERSION`, `OS_CACERT`, `OS_CERT`, and `OS_KEY`. Values can use single
+  or double quotes. `$NAME` and `${NAME}` can refer to an earlier supported
+  assignment outside single quotes.
+- **Rejected assignments:** Unknown `OS_*` variables, duplicates, undefined
+  references, command substitutions, and unsupported shell syntax in a Swift
+  assignment cause startup to fail.
+- **Ignored lines:** The server does not execute the file. It ignores other
+  lines, including `NOVA_*` assignments and shell commands; do not rely on
+  prompts or conditionals to set credentials.
+- **Precedence:** Swift credentials come entirely from the file. Swift
+  authentication variables already set in the host environment are ignored.
+  TLS settings can come from the environment, but values in the file take
+  precedence. Restart the server after changing the file.
+
 ## Troubleshooting
 
-- **Server does not start:** Check the Swift credential mode, unlocked keyring,
-  and active key with `uv run --locked swift-mcp-keys status swift-validation`.
-  The server fails closed if caller authentication is not configured.
+- **Server does not start:** Check that you supplied one complete Swift
+  credential mode and unlocked the host keyring. To check for an active
+  caller key, run `uv run --locked swift-mcp-keys status swift-validation`.
 - **Client cannot reach the server:** Check that the host process is running,
   both tunnel endpoints and the client URL use the same port, and the tunnel is
   connected with `workshop -p validation/copilot connections swift-validation`.
 - **HTTP 401:** Check that the client sends the correct, active Workshop key in
   `X-API-Key`. Do not print the key while troubleshooting.
-- **HTTP 503:** The server allows up to eight active requests and rejects excess
-  requests with `Server busy`. Ask the agent to make fewer calls in parallel and
-  retry failed calls with backoff. Uvicorn also has a separate limit of 32 open
-  connections or tasks, which includes idle keep-alive connections; hitting it
-  logs `Exceeded concurrency limit`.
+- **HTTP 503, `Server busy`:** Eight requests are already active. Reduce the
+  number of parallel calls and retry with backoff.
+- **`Exceeded concurrency limit` in the server log:** Uvicorn reached its
+  separate limit of 32 open connections or tasks. Idle keep-alive connections
+  count toward this limit; close unused connections before retrying.
 - **Workshop launch or connection fails:** Inspect
   `workshop -p validation/copilot changes` and then
   `workshop -p validation/copilot tasks <change-id>`.
 
 ## Security notes
 
-The server listens only on host loopback. Keep the tunnel local and use a
-separate, revocable caller key for each Workshop. A tunnel is not an
-authentication boundary. Any process in a Workshop can request a connected
-Workshop secret; the per-run Swift key is available to Copilot and its child
-processes. Disconnect interfaces when they are not needed and review agent
-permissions before running an agent. Swift object contents are untrusted and may
-be sent to the agent's model provider.
+The server listens only on host loopback. The tunnel provides connectivity;
+the caller key authenticates each request. Any process in the Workshop can
+request the connected Copilot token. Copilot and its child processes can also
+read the MCP caller key during a run. Disconnect unused interfaces and check
+the agent's permissions. Swift object contents are untrusted and may be sent
+to the agent's model provider.
 
-Protect the host keyring, key database, and logs. The documented local GNOME
-Keyring AES-128-CBC exception does not authenticate ciphertext; an
-authenticated-encryption store is safer. See [key management](docs/key-management.md)
-for storage and rotation limitations.
+Protect the host keyring, key database, and logs. See [key management](docs/key-management.md)
+for the keyring storage limitation, rotation, and immediate revocation.
 
 ### Read-only Swift deployment
 
-The MCP server exposes only read tools. Its Swift storage transport permits
-only `GET` and `HEAD` and rejects redirects. Password mode sends a separate
-token-issuance `POST` to Keystone, which also rejects redirects. Use a
-pre-issued token if the server must not issue that authentication `POST`.
+The server sends only `GET` and `HEAD` requests to Swift. In password mode it
+also sends a `POST` to Keystone to obtain a token. The server rejects redirects
+on both paths. Use a pre-issued token if it must not make the Keystone `POST`.
 
 Before deploying, have your Swift administrator provision a dedicated identity
 whose effective policy and ACLs deny all account, container, and object
@@ -389,6 +404,10 @@ The tests use controlled local Swift and Keystone endpoints; they do not need
 live storage credentials. See [conformance testing](docs/conformance.md) for
 the separate MCP fixture and its results. These automated checks do not run
 against a live Swift service or through a Workshop.
+
+The keyring integration test uses a temporary home and private D-Bus session,
+not your keyring. It skips if `dbus-run-session`, `gnome-keyring-daemon`, or
+`secret-tool` is missing.
 
 The pytest suite includes Hypothesis property tests. To run just those tests:
 
