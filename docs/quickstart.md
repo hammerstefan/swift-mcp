@@ -11,16 +11,51 @@ start the server and Copilot separately with the project in `quickstart/`.
 
 ## Before you start
 
-- **Host:** Install Python 3.11 or later, [uv](https://docs.astral.sh/uv/),
-  [just](https://just.systems/man/en/installation.html), and
-  [Workshop](https://ubuntu.com/workshop/docs/) 0.9.8 or later. The wizard
-  requires Bash 5.1 or later. Use the included container Workshop; Workshop
-  VMs do not support tunnels. Port `8000` must be free on `127.0.0.1`.
+- **Host:** On Ubuntu 24.04 LTS, install Python, Bash, `just`, and `secret-tool`
+  (used by the two-terminal setup). Install `uv` for your user with `pipx`:
+
+  ```sh
+  sudo apt update
+  sudo apt install python3 bash just libsecret-tools pipx
+  pipx install uv
+  pipx ensurepath
+  ```
+
+  Open a new terminal so `uv` is on your `PATH`. The wizard also requires
+  `flock`, provided by `util-linux` on Ubuntu. On other Linux distributions,
+  use your package manager for Python 3.11 or later, Bash 5.1 or later, and
+  `flock`; then
+  see the [uv](https://docs.astral.sh/uv/getting-started/installation/) and
+  [just](https://just.systems/man/en/installation.html) installation guides.
+
+  Install Workshop and its LXD dependency. If LXD is already installed, skip
+  the first command and follow the [Workshop installation guide](https://ubuntu.com/workshop/docs/tutorial/part-1-get-started.md#tut-install)
+  if you need to update to LXD 6.8 or later.
+
+  ```sh
+  sudo snap install --channel=6/stable lxd
+  sudo snap install --classic workshop
+  workshop --version
+  ```
+
+  Check that Workshop reports 0.9.8 or later. For an existing installation, see
+  the [Workshop upgrade instructions](https://ubuntu.com/workshop/docs/release-notes.md#release-upgrade).
+  Use the included container Workshop; Workshop VMs do not support tunnels.
+  Port `8000` must be free on `127.0.0.1`.
 - **Keyring:** Unlock the default collection in your host's Secret Service
-  keyring. Run all shell commands from the repository root on the host as the
-  unprivileged user who owns that keyring.
+  keyring before running the quickstart. On Ubuntu Desktop with GNOME Keyring:
+
+  1. Open **Passwords and Keys** (Seahorse). If it is not installed, run
+     `sudo apt install seahorse`.
+  2. Under **Passwords**, right-click your default keyring (usually **Login**)
+     and select **Unlock** if it is locked.
+  3. If prompted, enter the keyring password in the dialog and select **Unlock**.
+
+  Run the quickstart commands from the repository root in a terminal in the
+  same desktop session, as the user who owns the keyring. Do not use `sudo`
+  to run the quickstart.
 - **Copilot:** Use a GitHub account with access to Copilot CLI.
-- **Swift:** Choose a test container whose name and metadata you can share
+- **Swift:** Choose a container whose name and metadata you can share
   with Copilot's model provider. Prefer a [read-only Swift identity](../README.md#read-only-swift-deployment).
   For the wizard, you need an [OpenStack RC file](../README.md#openstack-rc-file)
   with that identity's credentials. Keep the file outside the checkout, owned
@@ -28,10 +63,16 @@ start the server and Copilot separately with the project in `quickstart/`.
 
 ## One-command quickstart
 
-The wizard creates a new Workshop for each run and prints its project path.
-It keeps the container and your project files when you exit. If the wizard
-reports an existing Workshop for `quickstart/`, use the two-terminal alternative
-to work with that Workshop.
+The wizard uses `quickstart/` as its Workshop project. It launches the Workshop
+on the first run and starts it again on later runs. It keeps the container and
+project files when you exit. The two-terminal alternative uses the same
+Workshop. The wizard does not overwrite your project files or automatically
+refresh the Workshop after definition changes.
+
+Before starting the wizard, stop the Workshop if it is already running. If
+the wizard reports an existing tunnel or token connection, inspect it before
+retrying; the wizard will not disconnect connections it did not create. Do not
+run the two-terminal setup at the same time as the wizard.
 
 ```sh
 just quickstart
@@ -78,7 +119,7 @@ If shutdown doesn't finish, see [Recover an interrupted wizard run](#recover-an-
 
 Use this path to run the server and Copilot from separate host terminals. It
 uses the Workshop project in `quickstart/`, which is mounted at `/project`.
-Install `secret-tool` on the host (`libsecret-tools` on Ubuntu).
+Make sure `secret-tool` is installed on the host (`libsecret-tools` on Ubuntu).
 
 ### 1. Store the Copilot token
 
@@ -189,22 +230,21 @@ workshop -p "$project" start
 workshop -p "$project" shell
 ```
 
-Each saved Workshop consumes storage. `workshop remove` deletes its container
-files, so back up anything you need before choosing to remove it. Saved files
-can include sensitive data; do not write credentials into the Workshop or its
-project.
+The Workshop consumes storage. `workshop remove` deletes its container files,
+so back up anything you need before choosing to remove it. The project is in
+your checkout and uses its existing permissions; files created in `/project`
+may appear as untracked Git files. Do not write credentials into the Workshop
+or its project, or commit sensitive files.
 
 ### Recover an interrupted wizard run
 
-If the wizard couldn't stop its Workshop, use the path it printed after
-`Workshop project:`. If you lost the output, run `workshop list --global` and
-identify the project for that run under `~/.local/share/swift-mcp/quickstarts/`.
+If the wizard couldn't stop its Workshop, use the project path it printed after
+`Workshop project:`. From the repository root, this is `quickstart/`.
 
-1. Replace the example session name with the one from your project path.
-   Check its connections and recent changes:
+1. Check its connections and recent changes:
 
    ```sh
-   project="$HOME/.local/share/swift-mcp/quickstarts/session.ABC12345"
+   project="$PWD/quickstart"
    workshop -p "$project" connections
    workshop -p "$project" changes
    ```
@@ -225,6 +265,10 @@ identify the project for that run under `~/.local/share/swift-mcp/quickstarts/`.
 
 4. If the Workshop is still running, run `workshop -p "$project" stop`.
    This preserves files in both the project and the container.
+
+Older wizard versions saved separate projects under
+`~/.local/share/swift-mcp/quickstarts/`. This wizard leaves those projects
+untouched. To access one, use its saved path with the commands above.
 
 ## Security notes
 

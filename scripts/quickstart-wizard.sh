@@ -203,6 +203,7 @@ set +x
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 RUN_DIR=
 PROJECT_DIR=
+quickstart_lock=
 server_pid=
 copilot_pid=
 launch_attempted=0
@@ -217,18 +218,49 @@ fail() {
 
 # Swift authentication stays with the host server, never the Workshop CLI.
 workshop_cmd() (
+  exec {quickstart_lock}<&-
   unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
   unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
   exec workshop -p "$PROJECT_DIR" "$@"
 )
 
+quickstart_python() (
+  exec {quickstart_lock}<&-
+  exec "$python" "$@"
+)
+
+check_connections() {
+  local connections
+  connections=$(workshop_cmd connections --no-headers) || fail 'Could not inspect Workshop connections.'
+  if grep -Fq "$client:swift-mcp" <<< "$connections" ||
+     grep -Fq "$client:github-token" <<< "$connections"; then
+    fail 'A quickstart tunnel or token is already connected; inspect Workshop connections before retrying.'
+  fi
+}
+
+inspect_workshop() {
+  local listing info
+  listing=$(workshop_cmd list --no-headers) || fail 'Could not inspect the quickstart Workshop.'
+  if grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$listing"; then
+    workshop_state=off
+    return
+  fi
+  info=$(workshop_cmd info swift-mcp-quickstart) || fail 'Could not inspect the quickstart Workshop.'
+  if grep -qxE 'status:[[:blank:]]+stopped[[:blank:]]*' <<< "$info"; then
+    workshop_state=stopped
+  else
+    fail 'The quickstart Workshop is not stopped or its state is unknown; inspect it before retrying.'
+  fi
+}
+
 # The asynchronous function must exec the CLI directly so its PID can be
 # terminated if the server exits while the interactive client is running.
 run_copilot() {
+  exec {quickstart_lock}<&-
   unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
   unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
   export COPILOT_MCP_SWIFT_KEY="$caller_key"
-  exec workshop -p "$PROJECT_DIR" run --env COPILOT_MCP_SWIFT_KEY -- copilot
+  exec workshop -p "$PROJECT_DIR" run --env COPILOT_MCP_SWIFT_KEY swift-mcp-quickstart -- copilot
 }
 
 stop_child() {
@@ -268,7 +300,7 @@ cleanup() {
     # or its project, including after an interrupted or failed run.
     listing=$(workshop_cmd list --no-headers) || stop_failed=1
     if (( ! stop_failed )) && ! grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$listing"; then
-      workshop_cmd stop || stop_failed=1
+      workshop_cmd stop swift-mcp-quickstart || stop_failed=1
     fi
     if (( stop_failed )); then
       printf '  Cleanup incomplete. Inspect workshop -p %s changes and tasks; the Workshop and its files were kept.\n' "$PROJECT_DIR" >&2
@@ -283,6 +315,9 @@ cleanup() {
       printf '  Could not remove temporary session: %s\n' "$RUN_DIR" >&2
       result=1
     fi
+  fi
+  if [[ -n "$quickstart_lock" ]]; then
+    flock -u "$quickstart_lock" || result=1
   fi
   if (( result == 0 )); then
     printf '\n  Quickstart stopped. Stored credentials and caller keys were kept.\n'
@@ -301,7 +336,7 @@ run_wizard() {
   banner "Swift MCP quickstart"
 
   stage "Check prerequisites"
-  for command in uv workshop; do
+  for command in uv workshop flock; do
     command -v "$command" >/dev/null 2>&1 || fail "Install $command before starting."
   done
   (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) )) || fail 'Bash 5.1 or later is required.'
@@ -309,9 +344,7 @@ run_wizard() {
   if (: </dev/tcp/127.0.0.1/8000) 2>/dev/null; then
     fail 'Port 127.0.0.1:8000 is already in use.'
   fi
-  # Never take over an existing checked-in quickstart Workshop. Fail closed
-  # if Workshop is unavailable or its output does not show the Off state.
-  local existing version major minor patch
+  local version major minor patch
   version=$(
     unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
     unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
@@ -322,12 +355,6 @@ run_wizard() {
   minor=$((10#${BASH_REMATCH[2]}))
   patch=$((10#${BASH_REMATCH[3]}))
   (( major > 0 || minor > 9 || (minor == 9 && patch >= 8) )) || fail 'Workshop 0.9.8 or later is required.'
-  existing=$(
-    unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
-    unset GH_TOKEN GITHUB_TOKEN COPILOT_GITHUB_TOKEN
-    workshop -p "$ROOT/quickstart" list --no-headers
-  ) || fail 'Could not inspect the existing quickstart Workshop.'
-  grep -qE '^swift-mcp-quickstart[[:blank:]]+Off[[:blank:]]' <<< "$existing" || fail 'An existing quickstart Workshop is present or its state is unknown; inspect it before retrying.'
   say 'The server is temporary. The Workshop and its project files will be kept on exit.'
   local session_response
   printf '  %s? Continue with this temporary session? [Y/n] %s' "$YELLOW" "$RESET"
@@ -338,43 +365,52 @@ run_wizard() {
   [[ -n ${SWIFT_MCP_OPENRC:-} && -n ${SWIFT_MCP_CONTAINERS:-} ]] || fail 'Both Swift settings are required.'
   export SWIFT_MCP_OPENRC SWIFT_MCP_CONTAINERS
 
+  PROJECT_DIR="$ROOT/quickstart"
+  exec {quickstart_lock}<"$PROJECT_DIR" || fail 'Could not lock the quickstart Workshop.'
+  flock -n "$quickstart_lock" || fail 'Another quickstart session is already running.'
+  local workshop_state
+  inspect_workshop
+  if [[ $workshop_state == stopped ]]; then
+    check_connections
+  fi
+
   stage "Install Swift MCP"
   RUN_DIR=$(mktemp -d -t swift-mcp-quickstart.XXXXXXXX) || fail 'Could not create a temporary session directory.'
   local session_dir
   session_dir=$(cd -- "$RUN_DIR" && pwd -P) || fail 'Could not access the temporary session directory.'
   RUN_DIR=$session_dir
   export UV_PROJECT_ENVIRONMENT="$RUN_DIR/venv"
-  (cd -- "$ROOT" && uv sync --locked --no-dev) || fail 'Swift MCP installation failed.'
+  (exec {quickstart_lock}<&-; cd -- "$ROOT" && uv sync --locked --no-dev) || fail 'Swift MCP installation failed.'
   local python="$RUN_DIR/venv/bin/python"
-  SWIFT_MCP_CONTAINERS=$("$python" -m swift_read_only_mcp.quickstart normalize-containers) || fail 'Could not prepare the container allowlist.'
+  SWIFT_MCP_CONTAINERS=$(quickstart_python -m swift_read_only_mcp.quickstart normalize-containers) || fail 'Could not prepare the container allowlist.'
   export SWIFT_MCP_CONTAINERS
-  "$python" -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Swift MCP configuration validation failed; see the error above.'
+  quickstart_python -m swift_read_only_mcp.quickstart validate "$ROOT" || fail 'Swift MCP configuration validation failed; see the error above.'
 
   stage "Connect your Copilot credential"
   local token_status
-  if "$python" -m swift_read_only_mcp.quickstart token-status; then
+  if quickstart_python -m swift_read_only_mcp.quickstart token-status; then
     say 'The quickstart Copilot token is already in the host keyring.'
   else
     token_status=$?
     (( token_status == 3 )) || fail 'Unlock the keyring and resolve any duplicate Copilot tokens before retrying.'
-    open_url 'https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read'
+    (exec {quickstart_lock}<&-; open_url 'https://github.com/settings/personal-access-tokens/new?name=Swift%20MCP%20quickstart&expires_in=7&user_copilot_requests=read')
     step 'Choose your personal account, seven-day expiration, and Public repositories.'
     step 'Under Permissions → Account, add Copilot Requests with Read access; add no other permissions.'
     step 'Generate the token, then paste it only at the hidden prompt below.'
     ask_secret COPILOT_TOKEN 'Copilot token:' || fail 'Copilot token was not provided.'
-    printf '%s' "$COPILOT_TOKEN" | "$python" -m swift_read_only_mcp.quickstart store-token || fail 'Could not store the Copilot token; inspect the keyring.'
+    printf '%s' "$COPILOT_TOKEN" | quickstart_python -m swift_read_only_mcp.quickstart store-token || fail 'Could not store the Copilot token; inspect the keyring.'
     unset COPILOT_TOKEN
-    "$python" -m swift_read_only_mcp.quickstart token-status || fail 'Could not verify the stored token; inspect the keyring.'
+    quickstart_python -m swift_read_only_mcp.quickstart token-status || fail 'Could not verify the stored token; inspect the keyring.'
   fi
 
   stage "Prepare the MCP caller key"
   local key_id
-  key_id=$("$python" -m swift_read_only_mcp.quickstart ensure-key) || fail 'Inspect local caller-key state before retrying.'
+  key_id=$(quickstart_python -m swift_read_only_mcp.quickstart ensure-key) || fail 'Inspect local caller-key state before retrying.'
   [[ $key_id =~ ^[1-9][0-9]{0,18}$ ]] || fail 'Invalid caller key ID.'
   say "Using caller key ID $key_id; the key remains in your host keyring."
 
   stage "Start Swift MCP"
-  "$python" -m swift_read_only_mcp.key_management start swift-mcp-quickstart >"$RUN_DIR/server.log" 2>&1 &
+  (exec {quickstart_lock}<&-; exec "$python" -m swift_read_only_mcp.key_management start swift-mcp-quickstart) >"$RUN_DIR/server.log" 2>&1 &
   server_pid=$!
   unset "${!OS_@}" "${!ST_@}" "${!SWIFT_MCP_@}" "${!SWIFTCLIENT_@}"
   local attempt
@@ -387,17 +423,20 @@ run_wizard() {
   done
   (( attempt < 150 )) || fail 'Swift MCP did not become ready in time.'
 
-  stage "Launch the Workshop"
-  [[ ${HOME:-} == /* && -d $HOME ]] || fail 'An absolute home directory is required to keep Workshop files.'
-  (umask 077; mkdir -p -- "$HOME/.local/share/swift-mcp/quickstarts") || fail 'Could not prepare the Workshop project directory.'
-  PROJECT_DIR=$(umask 077; mktemp -d -- "$HOME/.local/share/swift-mcp/quickstarts/session.XXXXXXXX") || fail 'Could not prepare the Workshop project directory.'
-  cp -- "$ROOT/quickstart/workshop.yaml" "$ROOT/quickstart/mcp-config.json" "$PROJECT_DIR/" || fail 'Could not prepare the Workshop project.'
+  stage "Prepare the Workshop"
   say "Workshop project: $PROJECT_DIR"
-  launch_attempted=1
-  workshop_cmd launch || fail 'Workshop launch failed; inspect the reported change.'
+  inspect_workshop
+  if [[ $workshop_state == off ]]; then
+    launch_attempted=1
+    workshop_cmd launch swift-mcp-quickstart || fail 'Workshop launch failed; inspect the reported change.'
+  elif [[ $workshop_state == stopped ]]; then
+    launch_attempted=1
+    workshop_cmd start swift-mcp-quickstart || fail 'Workshop start failed; inspect the reported change.'
+  fi
   kill -0 "$server_pid" 2>/dev/null || fail 'Swift MCP stopped during Workshop launch.'
 
   stage "Connect the tunnel and token"
+  check_connections
   tunnel_attempted=1
   workshop_cmd connect "$client:swift-mcp" :swift-mcp || fail 'Could not connect the tunnel.'
   token_attempted=1
@@ -406,7 +445,7 @@ run_wizard() {
 
   stage "Run Copilot"
   local caller_key finished status
-  caller_key=$("$python" -m swift_read_only_mcp.quickstart caller-key "$key_id") || fail 'Could not retrieve the caller key.'
+  caller_key=$(quickstart_python -m swift_read_only_mcp.quickstart caller-key "$key_id") || fail 'Could not retrieve the caller key.'
   [[ -n $caller_key ]] || fail 'The caller key is empty.'
   say 'Use /mcp to inspect swift-mcp, then try get_container_stats on an allowed container.'
   run_copilot <&0 &

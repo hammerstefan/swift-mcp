@@ -1,6 +1,8 @@
 """Exercise the wizard against fake local commands, never a real Workshop or browser."""
 
 import json
+import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -97,11 +99,25 @@ elif name == "workshop":
           has_key=bool(os.environ.get("COPILOT_MCP_SWIFT_KEY")))
     if command == "list":
         existing = project == Path(os.environ["CHECKOUT_PROJECT"])
-        if failure == ("existing-list" if existing else "cleanup-list"):
+        if failure == "existing-list" or (
+            failure == "cleanup-list" and (project / "launched").exists()
+        ):
             sys.exit(1)
-        ready = (existing and os.environ.get("EXISTING")) or (project / "launched").exists()
-        status = "Ready" if ready else "Off"
+        status = "Stopped" if (project / "stopped").exists() else (
+            "Ready" if (existing and os.environ.get("EXISTING")) or (project / "launched").exists()
+            else "Off"
+        )
         print("swift-mcp-quickstart  " + status + "  -")
+    elif command == "info":
+        if failure == "workshop-info":
+            sys.exit(1)
+        status = "stopped" if (project / "stopped").exists() else (
+            "ready" if os.environ.get("EXISTING") or (project / "launched").exists() else "off"
+        )
+        if status == "off":
+            print("error: workshop not launched", file=sys.stderr)
+            sys.exit(1)
+        print("status: " + status)
     elif command == "launch":
         (project / "launched").write_text("yes")
         if os.environ.get("LAUNCH_FAIL"):
@@ -109,6 +125,18 @@ elif name == "workshop":
         if failure == "server-after-launch":
             os.kill(int((state / "server-pid").read_text()), signal.SIGTERM)
             time.sleep(0.3)
+    elif command == "start":
+        if failure == "workshop-start":
+            sys.exit(1)
+        (project / "stopped").unlink()
+    elif command == "connections":
+        if failure == "connection-inspect":
+            sys.exit(1)
+        for plug in ("swift-mcp", "github-token"):
+            if (os.environ.get("EXISTING_CONNECTION") == plug
+                    or (state / ("connected-" + plug)).exists()):
+                print("tunnel swift-mcp-quickstart/copilot:" + plug
+                      + " swift-mcp-quickstart/system:swift-mcp manual")
     elif command == "connect" and failure == (
             "tunnel-connect" if args[3].endswith(":swift-mcp") else "token-connect"):
         sys.exit(1)
@@ -118,9 +146,13 @@ elif name == "workshop":
           and args[3].endswith(":github-token")):
         os.kill(int((state / "server-pid").read_text()), signal.SIGTERM)
         time.sleep(0.3)
+    elif command == "connect":
+        (state / ("connected-" + args[3].split(":")[-1])).write_text("yes")
     elif command == "disconnect" and failure == (
             "tunnel-disconnect" if args[3].endswith(":swift-mcp") else "token-disconnect"):
         sys.exit(1)
+    elif command == "disconnect":
+        (state / ("connected-" + args[3].split(":")[-1])).unlink(missing_ok=True)
     elif command == "run":
         if os.environ.get("CREATE_USER_FILES"):
             (project / "user-report.txt").write_text("project work")
@@ -144,6 +176,16 @@ elif name == "workshop":
         (project / "launched").unlink(missing_ok=True)
 elif name == "xdg-open":
     event("browser", url=args[0])
+    if os.environ.get("BROWSER_HOLDS_FDS"):
+        pid = os.fork()
+        if pid == 0:
+            os.setsid()
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            time.sleep(30)
+            os._exit(0)
+        (state / "browser-pid").write_text(str(pid))
     if failure == "browser":
         sys.exit(1)
 elif name in ("mktemp", "mkdir", "cp", "rm"):
@@ -168,7 +210,9 @@ def fake_environment(tmp_path):
     checkout = tmp_path / "checkout"
     scripts = checkout / "scripts"
     scripts.mkdir(parents=True)
-    (checkout / "quickstart").symlink_to(ROOT / "quickstart", target_is_directory=True)
+    (checkout / "quickstart").mkdir()
+    for name in ("workshop.yaml", "mcp-config.json"):
+        shutil.copyfile(ROOT / "quickstart" / name, checkout / "quickstart" / name)
     wizard = scripts / WIZARD.name
     source = WIZARD.read_text()
     original_probe = "</dev/tcp/127.0.0.1/8000"
@@ -245,10 +289,9 @@ def test_user_files_survive_teardown_in_project_and_container(fake_environment, 
     assert "workshop-remove" not in [event["command"] for event in logged]
     assert "workshop-stop" in [event["command"] for event in logged]
     assert str(project) in result.stdout
-    assert project.stat().st_mode & 0o777 == 0o700
 
 
-def test_new_run_does_not_replace_a_previous_workshop(fake_environment):
+def test_next_run_reuses_workshop_and_preserves_user_files(fake_environment):
     env, state, _ = fake_environment
     env["CREATE_USER_FILES"] = "1"
     first = run_wizard(env)
@@ -256,14 +299,129 @@ def test_new_run_does_not_replace_a_previous_workshop(fake_environment):
     first_project = Path(
         next(event["project"] for event in events(state) if event["command"] == "workshop-run")
     )
+    assert first_project == Path(env["CHECKOUT_PROJECT"])
+    definition = first_project / "workshop.yaml"
+    definition.write_text(definition.read_text() + "\n# User customization\n")
+    customized_definition = definition.read_text()
+    config = first_project / "mcp-config.json"
+    config.write_text(config.read_text() + "\n")
+    customized_config = config.read_text()
 
     del env["CREATE_USER_FILES"]
     second = run_wizard(env)
     assert second.returncode == 0, second.stderr
     projects = [event["project"] for event in events(state) if event["command"] == "workshop-run"]
-    assert len(set(projects)) == 2
+    assert projects == [str(first_project), str(first_project)]
+    commands = [event["command"] for event in events(state)]
+    assert commands.count("workshop-launch") == 1
+    assert commands.count("workshop-start") == 1
+    assert definition.read_text() == customized_definition
+    assert config.read_text() == customized_config
     assert (first_project / "user-report.txt").read_text() == "project work"
     assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+
+
+def test_older_saved_projects_are_not_taken_over(fake_environment):
+    env, state, _ = fake_environment
+    project = Path(env["HOME"]) / ".local/share/swift-mcp/quickstarts/session.old"
+    project.mkdir(parents=True)
+    user_file = project / "workshop.yaml"
+    user_file.write_text("user-owned project")
+
+    result = run_wizard(env)
+
+    assert result.returncode == 0, result.stderr
+    assert user_file.read_text() == "user-owned project"
+    assert all(event.get("project") != str(project) for event in events(state))
+
+
+def test_concurrent_run_does_not_start_a_second_server(fake_environment):
+    env, state, _ = fake_environment
+    env.update(RUN_WAIT="1", CREATE_USER_FILES="1")
+    process = subprocess.Popen(
+        ["bash", env["FAKE_WIZARD"]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write("\ny\n")
+    process.stdin.flush()
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if (state / "container-files" / "user-notes.txt").exists():
+                break
+            if process.poll() is not None:
+                pytest.fail("First wizard exited before starting Copilot")
+            time.sleep(0.02)
+        else:
+            pytest.fail("First wizard did not start Copilot")
+
+        second = run_wizard(env)
+
+        assert second.returncode != 0
+        assert [event["command"] for event in events(state)].count("server") == 1
+        assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+    finally:
+        process.send_signal(signal.SIGTERM)
+        process.communicate(timeout=10)
+
+
+def test_browser_process_does_not_block_a_later_quickstart(fake_environment):
+    env, state, _ = fake_environment
+    env.update(TOKEN_MISSING="1", BROWSER_HOLDS_FDS="1")
+    try:
+        first = run_wizard(env, "\ny\ngithub_pat_example\n")
+        assert first.returncode == 0, first.stderr
+
+        second = run_wizard(env)
+
+        assert second.returncode == 0, second.stderr
+    finally:
+        browser_pid = state / "browser-pid"
+        if browser_pid.exists():
+            os.kill(int(browser_pid.read_text()), signal.SIGTERM)
+
+
+def test_browser_does_not_hold_lock_after_wizard_is_killed(fake_environment):
+    env, state, _ = fake_environment
+    env.update(TOKEN_MISSING="1", BROWSER_HOLDS_FDS="1")
+    process = subprocess.Popen(
+        ["bash", env["FAKE_WIZARD"]],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write("\ny\n")
+    process.stdin.flush()
+    try:
+        deadline = time.monotonic() + 10
+        browser_pid = state / "browser-pid"
+        while time.monotonic() < deadline and not browser_pid.exists():
+            if process.poll() is not None:
+                pytest.fail("Wizard exited before opening the browser")
+            time.sleep(0.02)
+        assert browser_pid.exists()
+        process.kill()
+        process.communicate(timeout=10)
+        del env["TOKEN_MISSING"]
+        del env["BROWSER_HOLDS_FDS"]
+
+        result = run_wizard(env)
+
+        assert result.returncode == 0, result.stderr
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+        if (state / "browser-pid").exists():
+            os.kill(int((state / "browser-pid").read_text()), signal.SIGTERM)
 
 
 def test_one_shot_stops_workshop_and_cleans_temporary_environment(fake_environment):
@@ -279,7 +437,7 @@ def test_one_shot_stops_workshop_and_cleans_temporary_environment(fake_environme
     workshop_events = [event for event in logged if "project" in event]
     assert all(not event["has_swift"] for event in workshop_events)
     assert next(event for event in workshop_events if event["command"] == "workshop-run")["has_key"]
-    assert all(event["project"] != env["CHECKOUT_PROJECT"] for event in workshop_events[1:])
+    assert all(event["project"] == env["CHECKOUT_PROJECT"] for event in workshop_events)
     assert list(temporary.iterdir()) == []
     assert CALLER_SECRET not in result.stdout + result.stderr
     assert "private-swift-password" not in result.stdout + result.stderr
@@ -393,14 +551,63 @@ def test_missing_token_opens_form_and_stores_it_in_keyring(fake_environment):
     assert "github_pat_example" not in result.stdout + result.stderr
 
 
-def test_existing_workshop_is_not_touched(fake_environment):
+def test_running_workshop_is_not_taken_over(fake_environment):
     env, state, temporary = fake_environment
     env["EXISTING"] = "1"
     result = run_wizard(env)
     assert result.returncode != 0
-    assert "existing quickstart Workshop is present or its state is unknown" in result.stderr
-    assert [event["command"] for event in events(state)] == ["workshop-version", "workshop-list"]
+    assert "not stopped" in result.stderr
+    commands = {event["command"] for event in events(state)}
+    assert not {"server", "workshop-start", "workshop-connect", "workshop-stop"} & commands
     assert list(temporary.iterdir()) == []
+
+
+@pytest.mark.parametrize("plug", ["swift-mcp", "github-token"])
+def test_existing_quickstart_connections_are_not_disconnected(fake_environment, plug):
+    env, state, _ = fake_environment
+    assert run_wizard(env).returncode == 0
+    before = len(events(state))
+    env["EXISTING_CONNECTION"] = plug
+
+    result = run_wizard(env)
+
+    assert result.returncode != 0
+    commands = {event["command"] for event in events(state)[before:]}
+    assert not {"server", "workshop-start", "workshop-connect", "workshop-disconnect"} & commands
+    assert "already connected" in result.stderr
+
+
+def test_failed_disconnect_is_not_taken_over_on_the_next_run(fake_environment):
+    env, state, _ = fake_environment
+    env["FAIL_STAGE"] = "token-disconnect"
+    first = run_wizard(env)
+    assert first.returncode != 0
+    assert (state / "connected-github-token").exists()
+    before = len(events(state))
+    del env["FAIL_STAGE"]
+
+    second = run_wizard(env)
+
+    assert second.returncode != 0
+    assert "already connected" in second.stderr
+    assert (state / "connected-github-token").exists()
+    assert "workshop-disconnect" not in [event["command"] for event in events(state)[before:]]
+
+
+def test_failed_workshop_restart_preserves_existing_files(fake_environment):
+    env, state, _ = fake_environment
+    env["CREATE_USER_FILES"] = "1"
+    assert run_wizard(env).returncode == 0
+    del env["CREATE_USER_FILES"]
+    env["FAIL_STAGE"] = "workshop-start"
+
+    result = run_wizard(env)
+
+    assert result.returncode != 0
+    assert "Workshop start failed" in result.stderr
+    assert (Path(env["CHECKOUT_PROJECT"]) / "user-report.txt").read_text() == "project work"
+    assert (state / "container-files" / "user-notes.txt").read_text() == "container work"
+    assert not (state / "connected-swift-mcp").exists()
 
 
 def test_unsupported_workshop_version_fails_before_launch(fake_environment):
@@ -524,7 +731,7 @@ def test_invalid_config_stops_before_token_or_workshop_launch(fake_environment):
     ("failure", "description"),
     [
         ("workshop-version", "Could not determine the Workshop version"),
-        ("existing-list", "Could not inspect the existing quickstart Workshop"),
+        ("existing-list", "Could not inspect the quickstart Workshop"),
         ("mktemp", "Could not create a temporary session directory"),
         ("session-directory", "Could not access the temporary session directory"),
         ("install", "Swift MCP installation failed"),
@@ -534,8 +741,7 @@ def test_invalid_config_stops_before_token_or_workshop_launch(fake_environment):
         ("invalid-key-id", "Invalid caller key ID"),
         ("server-start", "Swift MCP exited during startup"),
         ("server-timeout", "Swift MCP did not become ready in time"),
-        ("mkdir", "Could not prepare the Workshop project directory"),
-        ("cp", "Could not prepare the Workshop project"),
+        ("connection-inspect", "Could not inspect Workshop connections"),
         ("server-after-launch", "Swift MCP stopped during Workshop launch"),
         ("tunnel-connect", "Could not connect the tunnel"),
         ("token-connect", "Could not connect the Copilot token"),
