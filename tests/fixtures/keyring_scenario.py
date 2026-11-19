@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -12,6 +13,46 @@ from pathlib import Path
 import httpx
 import secretstorage
 from jeepney import DBusAddress, new_method_call
+
+
+def quickstart_scenario(existing_key_id):
+    """Start the real quickstart with an isolated keyring and a fake Workshop."""
+    environment = {
+        **os.environ,
+        "SWIFT_MCP_OPENRC": str(Path.home() / "test.rc"),
+        "SWIFT_MCP_CONTAINERS": '["cloud-images"]',
+    }
+    ids = []
+    for _ in range(2):
+        result = subprocess.run(
+            ["just", "quickstart-serve"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # The fake Workshop refuses launch after the server becomes ready.
+        assert result.returncode != 0
+        assert "Key provisioning failed" not in result.stderr
+        match = re.search(r"Using caller key ID ([1-9][0-9]*)", result.stdout)
+        assert match is not None, result.stderr
+        ids.append(match.group(1))
+        marker = Path.home() / "workshop-called"
+        assert marker.is_file()
+        marker.unlink()
+    assert ids[0] == ids[1]
+    assert "fixture-swift-token" not in result.stdout + result.stderr
+    result = subprocess.run(
+        [sys.executable, "-m", "swift_read_only_mcp.key_management", "status", "validation"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert any(
+        str(key["key_id"]) == existing_key_id and key["active"]
+        for key in json.loads(result.stdout)["keys"]
+    )
 
 
 def main():
@@ -77,6 +118,9 @@ def main():
         assert item.stdout.startswith(b"smcp-")
         assert item.stdout.decode() not in result.stdout + result.stderr
         assert (Path.home() / ".local/state/swift-mcp/keys.db").is_file()
+        if os.environ.get("QUICKSTART_SCENARIO"):
+            quickstart_scenario(key_id)
+            return
         environment = {
             **os.environ,
             "OS_AUTH_TOKEN": "fixture-swift-token",

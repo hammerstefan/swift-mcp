@@ -21,6 +21,11 @@ if port_ready; then
     fail 'Port 127.0.0.1:8000 is already in use.'
 fi
 
+key_id=$(uv run --locked python -m swift_read_only_mcp.quickstart ensure-key) || \
+    fail 'Caller-key setup failed; inspect local state before retrying.'
+[[ $key_id =~ ^[1-9][0-9]{0,18}$ ]] || fail 'Invalid caller key ID.'
+printf 'Using caller key ID %s; the key remains in your host keyring.\n' "$key_id"
+
 client=swift-mcp-quickstart/copilot
 server_pid=
 tunnel_connected=0

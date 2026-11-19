@@ -96,21 +96,19 @@ these lookup labels. You do not need to edit it. The lookup must match exactly
 one keyring item. Do not paste the token into YAML, a shell command, or Copilot
 chat.
 
-## 2. Install Swift MCP and create a caller key
+## 2. Install Swift MCP
 
-In your first host terminal, install the server and create the Workshop's MCP
-caller key:
+In your first host terminal, install the server:
 
 ```sh
 uv sync --locked
-uv run --locked swift-mcp-keys init swift-mcp-quickstart
 ```
 
-Note the numeric `key_id` in the output. The command stores the key itself in
-your host keyring. This key authenticates Copilot to Swift MCP; the Copilot
-token authenticates Copilot to GitHub. Run `init` only once. If it reports
-existing state, see [key management](key-management.md) rather than deleting or
-overwriting anything.
+The next step creates or reuses the Workshop's MCP caller key and prints its
+numeric ID. The key itself stays in your host keyring. This key authenticates
+Copilot to Swift MCP; the Copilot token authenticates Copilot to GitHub. If key
+setup fails, see [key management](key-management.md) rather than deleting or
+overwriting existing state.
 
 Swift MCP parses the RC file; it does not source it. The required values must
 be present as supported assignments. If the file needs to prompt for a
@@ -129,8 +127,10 @@ just quickstart-serve
 ```
 
 `just quickstart-serve` starts Swift MCP on `127.0.0.1:8000`, launches or starts
-the Workshop if needed, and connects the tunnel and Copilot token. Leave this
-terminal open and continue when the recipe prompts you to run Copilot.
+the Workshop if needed, and connects the tunnel and Copilot token. It creates a
+caller key if one does not exist and reuses an existing unambiguous active key;
+it refuses incomplete or ambiguous key state. Note the printed caller key ID.
+Leave this terminal open and continue when the recipe prompts you to run Copilot.
 
 If launch or a connection fails, run `workshop -p quickstart changes` and then
 `workshop -p quickstart tasks <change-id>` with the failed change's ID.
@@ -140,7 +140,7 @@ connections before retrying.
 
 ## 4. Start copilot in workshop
 
-In a second host terminal, replace `42` with the `key_id` printed in step 2:
+In a second host terminal, replace `42` with the caller key ID printed in step 3:
 
 ```sh
 KEY_ID=42 just quickstart-copilot

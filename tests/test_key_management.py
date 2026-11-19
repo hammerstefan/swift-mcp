@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -523,6 +524,48 @@ def test_cli_secrets_are_readable_by_secret_tool_in_an_isolated_keyring(tmp_path
         check=True,
         capture_output=True,
         timeout=30,
+    )
+
+
+@pytest.mark.skipif(
+    not all(
+        shutil.which(name)
+        for name in ("dbus-run-session", "gnome-keyring-daemon", "secret-tool", "uv", "just")
+    ),
+    reason="isolated GNOME Keyring and quickstart tools are unavailable",
+)
+def test_quickstart_serve_adds_and_reuses_key_in_an_isolated_keyring(tmp_path):
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", 8000))
+        except OSError:
+            pytest.skip("quickstart port 8000 is in use")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    workshop = bin_dir / "workshop"
+    workshop.write_text('#!/bin/sh\n[ "$3" != launch ] || : > "$HOME/workshop-called"\nexit 1\n')
+    workshop.chmod(0o755)
+    rc = tmp_path / "test.rc"
+    rc.write_text(
+        "OS_AUTH_TOKEN='fixture-swift-token'\nOS_STORAGE_URL='http://127.0.0.1:1/v1/AUTH_test'\n"
+    )
+    rc.chmod(0o600)
+    environment = {
+        "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        "LANG": "C.UTF-8",
+        "HOME": str(tmp_path),
+        "XDG_DATA_HOME": str(tmp_path / "data"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_RUNTIME_DIR": str(tmp_path),
+        "OUTER_DBUS_ADDRESS": os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""),
+        "QUICKSTART_SCENARIO": "1",
+    }
+    subprocess.run(
+        ["dbus-run-session", "--", sys.executable, "tests/fixtures/keyring_scenario.py"],
+        env=environment,
+        check=True,
+        capture_output=True,
+        timeout=75,
     )
 
 
